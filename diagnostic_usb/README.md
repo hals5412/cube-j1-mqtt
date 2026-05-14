@@ -1,52 +1,46 @@
-# Cube J1 Diagnostic USB
+# Cube J1 診断用USB
 
-This directory is a safer diagnostic package for checking a Cube J1 before
-B-route credentials are available.
+このディレクトリは、Bルート認証ID/パスワードを入手する前に Cube J1 を確認するための、比較的安全な診断用USB一式です。
 
-It does not install the MQTT bridge, does not overwrite init rc files, and does
-not disable stock services persistently. It can optionally enable ADB, apply
-Wi-Fi settings, run BP35C0 serial checks, run `SKSCAN`, and publish a test MQTT
-message.
+この診断ツールは MQTT ブリッジをインストールせず、init rc ファイルを上書きせず、標準サービスを永続的に無効化しません。必要に応じて ADB の一時有効化、Wi-Fi設定の適用、BP35C0 のシリアル確認、`SKSCAN`、MQTTテスト送信を実行できます。
 
-## USB Layout
+## USBの配置
 
-Copy the contents of this directory to the root of a FAT32 USB drive:
+FAT32形式のUSBメモリ直下に、このディレクトリの中身をコピーします。
 
 ```text
 CubeJMTS.txt
 production_tool/
 ```
 
-## Recommended First Run
+## 初回におすすめの確認
 
-1. Leave `production_tool/diag_config.sh` with the defaults.
-2. Copy this directory's contents to the USB drive.
-3. Insert the USB drive into the Cube J1 and power it on.
-4. The script writes `/data/local/cube_diag.log` on the Cube J1.
+1. `production_tool/diag_config.sh` は初期値のままにします。
+2. このディレクトリの中身をUSBメモリへコピーします。
+3. Cube J1 にUSBメモリを挿入し、電源を入れます。
+4. 診断結果は Cube J1 側の `/data/local/cube_diag.log` に出力されます。
 
-With the defaults, the tool:
+初期設定では、以下だけを実行します。
 
-- does not enable ADB
-- does not modify Wi-Fi settings
-- temporarily stops `wisund` and `NDEcLiteAgent`
-- checks `/dev/ttyS1` with `SKVER`, `SKINFO`, and `WOPT 1`
-- restarts the stock Wi-SUN services at the end
+- ADBは有効化しない
+- Wi-Fi設定は変更しない
+- `wisund` と `NDEcLiteAgent` を一時停止する
+- `/dev/ttyS1` に対して `SKVER`、`SKINFO`、`WOPT 1` を実行する
+- 最後に標準のWi-SUN関連サービスを再起動する
 
-## Optional Checks
+## 任意の追加確認
 
-Edit `production_tool/diag_config.sh` before copying to USB.
+USBメモリへコピーする前に `production_tool/diag_config.sh` を編集します。
 
-- `ENABLE_ADB=1`: enable ADB TCP port 5555 for this boot
-- `PERSIST_ADB=1`: persist ADB TCP settings; avoid this for normal diagnostics
-- `APPLY_WIFI=1`: copy `wpa_supplicant.conf` to the Cube J1
-- `RUN_SKSCAN=1`: scan for visible Wi-SUN PANs without B-route credentials
-- `RUN_MQTT_TEST=1`: publish a test message to the configured MQTT broker
+- `ENABLE_ADB=1`: 今回の起動中だけ ADB TCP ポート5555を有効化する
+- `PERSIST_ADB=1`: ADB TCP設定を永続化する。通常の診断では避けてください
+- `APPLY_WIFI=1`: `wpa_supplicant.conf` を Cube J1 にコピーする
+- `RUN_SKSCAN=1`: Bルート認証なしで見えるWi-SUN PANをスキャンする
+- `RUN_MQTT_TEST=1`: 設定したMQTTブローカーへテストメッセージを送信する
 
-For Wi-Fi testing, copy `wpa_supplicant.conf.example` to
-`wpa_supplicant.conf`, then edit the SSID and password locally. Do not commit
-real credentials.
+Wi-Fiを確認する場合は、`wpa_supplicant.conf.example` を `wpa_supplicant.conf` にコピーしてから、SSIDとパスワードをローカルで編集してください。実際の認証情報はcommitしないでください。
 
-For MQTT testing, set:
+MQTT送信を確認する場合は、以下を設定します。
 
 ```sh
 RUN_MQTT_TEST=1
@@ -57,20 +51,17 @@ MQTT_PASS=your_mqtt_password
 MQTT_TOPIC=cubej/diagnostic/status
 ```
 
-## Reading The Log
+## ログの確認
 
-If ADB is enabled:
+ADBを有効化した場合は、以下でログを確認できます。
 
 ```sh
 adb connect <Cube-J1-IP>:5555
 adb shell cat /data/local/cube_diag.log
 ```
 
-If ADB is not enabled, run again with `ENABLE_ADB=1` after deciding that is
-acceptable for your network.
+ADBを有効化していない場合は、ネットワーク上のリスクを許容できることを確認してから、`ENABLE_ADB=1` にして再実行してください。
 
-## Notes
+## 補足
 
-`RUN_SKSCAN=1` does not authenticate to the smart meter. It only checks whether
-the Wi-SUN module can see PANs nearby. B-route ID/password are still required for
-PANA join and actual meter readings.
+`RUN_SKSCAN=1` はスマートメーターへ認証しません。近くのWi-SUN PANが見えるかを確認するだけです。PANA接続と実際の電力データ取得には、Bルート認証ID/パスワードが必要です。

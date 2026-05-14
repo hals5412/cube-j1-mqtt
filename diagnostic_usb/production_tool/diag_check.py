@@ -1,8 +1,8 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
-"""Cube J1 diagnostic checks for BP35C0 serial and optional MQTT publish.
+"""BP35C0シリアル確認と任意のMQTT送信を行うCube J1診断スクリプト。
 
-Python 2.7 stdlib only. Intended to be launched by production_tool from USB.
+Python 2.7標準ライブラリだけで動作します。USB上のproduction_toolから起動される想定です。
 """
 
 from __future__ import print_function
@@ -110,14 +110,14 @@ def serial_diag():
     port = env("SERIAL_PORT", "/dev/ttyS1")
     run_scan = env("RUN_SKSCAN", "0") == "1"
     scan_duration = env("SKSCAN_DURATION", "4")
-    log("opening serial {}".format(port))
+    log("シリアルポートを開きます: {}".format(port))
     fd = open_serial(port)
     try:
         command(fd, "SKVER", timeout=5)
         command(fd, "SKINFO", timeout=5)
         command(fd, "WOPT 1", timeout=5)
         if run_scan:
-            log("starting SKSCAN duration={}".format(scan_duration))
+            log("SKSCANを開始します duration={}".format(scan_duration))
             termios.tcflush(fd, termios.TCIFLUSH)
             serial_write(fd, "SKSCAN 2 FFFFFFFF {} 0\r\n".format(scan_duration))
             deadline = time.time() + int(scan_duration) + 20
@@ -127,7 +127,7 @@ def serial_diag():
                     continue
                 log("scan < {}".format(line))
                 if line.startswith("EVENT 22"):
-                    log("scan completed")
+                    log("スキャンが完了しました")
                     break
     finally:
         try:
@@ -182,7 +182,7 @@ def mqtt_publish(host, port, username, password, topic, payload):
     ack = sock.recv(4)
     log("mqtt CONNACK {}".format(binascii.hexlify(ack)))
     if len(ack) < 4 or byte_value(ack[0]) != 0x20 or byte_value(ack[3]) != 0:
-        raise RuntimeError("MQTT connect failed: {}".format(binascii.hexlify(ack)))
+        raise RuntimeError("MQTT接続に失敗しました: {}".format(binascii.hexlify(ack)))
     topic_b = topic.encode("utf-8")
     payload_b = payload.encode("utf-8")
     msg = struct.pack(">H", len(topic_b)) + topic_b + payload_b
@@ -194,29 +194,29 @@ def mqtt_publish(host, port, username, password, topic, payload):
 def mqtt_diag():
     host = env("MQTT_HOST", "")
     if not host:
-        raise RuntimeError("MQTT_HOST is empty")
+        raise RuntimeError("MQTT_HOSTが空です")
     payload = {
         "device_id": env("DEVICE_ID", "cubej1_diag"),
         "status": "diagnostic",
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     topic = env("MQTT_TOPIC", "cubej/diagnostic/status")
-    log("publishing MQTT test to {} on {}:{}".format(topic, host, env("MQTT_PORT", "1883")))
+    log("MQTTテスト送信を実行します: topic={} host={}:{}".format(topic, host, env("MQTT_PORT", "1883")))
     mqtt_publish(host, int(env("MQTT_PORT", "1883")),
                  env("MQTT_USER", ""), env("MQTT_PASS", ""),
                  topic, json.dumps(payload, separators=(",", ":")))
-    log("mqtt publish completed")
+    log("MQTT送信が完了しました")
 
 
 def main():
     if len(sys.argv) < 2:
-        raise SystemExit("usage: diag_check.py serial|mqtt")
+        raise SystemExit("使い方: diag_check.py serial|mqtt")
     if sys.argv[1] == "serial":
         serial_diag()
     elif sys.argv[1] == "mqtt":
         mqtt_diag()
     else:
-        raise SystemExit("unknown mode: {}".format(sys.argv[1]))
+        raise SystemExit("不明なモードです: {}".format(sys.argv[1]))
 
 
 if __name__ == "__main__":

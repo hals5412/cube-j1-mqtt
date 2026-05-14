@@ -34,14 +34,15 @@ run_cmd() {
 }
 
 touch "$LOG" 2>/dev/null
-log "=== Cube J1 diagnostic start ==="
+log "=== Cube J1 診断開始 ==="
 log "PT=$PT"
 
 if [ -f "$PT/diag_config.sh" ]; then
+    # 外部設定ファイルを読み込む。
     # shellcheck disable=SC1090
     . "$PT/diag_config.sh"
 else
-    log "diag_config.sh not found; using built-in defaults"
+    log "diag_config.sh が見つからないため、内蔵の初期値を使用します"
     ENABLE_ADB=0
     PERSIST_ADB=0
     APPLY_WIFI=0
@@ -61,7 +62,7 @@ fi
 
 led_rgb 0 0 80
 
-log "--- system ---"
+log "--- システム情報 ---"
 run_cmd id
 run_cmd uname -a
 run_cmd getprop ro.product.model
@@ -71,10 +72,10 @@ run_cmd ip addr
 run_cmd df /data
 
 if [ "$ENABLE_ADB" = "1" ]; then
-    log "--- enabling adb tcp for this boot ---"
+    log "--- 今回の起動中だけ ADB TCP を有効化します ---"
     run_cmd setprop service.adb.tcp.port 5555
     if [ "$PERSIST_ADB" = "1" ]; then
-        log "--- enabling persistent adb tcp because PERSIST_ADB=1 ---"
+        log "--- PERSIST_ADB=1 のため、ADB TCP設定を永続化します ---"
         run_cmd setprop persist.adb.tcp.port 5555
         run_cmd setprop persist.sys.usb.config mtp,adb
     fi
@@ -84,7 +85,7 @@ if [ "$ENABLE_ADB" = "1" ]; then
 fi
 
 if [ "$APPLY_WIFI" = "1" ]; then
-    log "--- applying wifi config ---"
+    log "--- Wi-Fi設定を適用します ---"
     if [ -f "$PT/wpa_supplicant.conf" ]; then
         ts="$(date '+%Y%m%d-%H%M%S')"
         if [ -f /data/misc/wifi/wpa_supplicant.conf ]; then
@@ -97,13 +98,13 @@ if [ "$APPLY_WIFI" = "1" ]; then
         sleep 8
         run_cmd ifconfig wlan0
     else
-        log "APPLY_WIFI=1 but $PT/wpa_supplicant.conf is missing"
+        log "APPLY_WIFI=1 ですが $PT/wpa_supplicant.conf が見つかりません"
     fi
 fi
 
 stopped_services=""
 if [ "$STOP_WISUN_SERVICES" = "1" ]; then
-    log "--- temporarily stopping stock Wi-SUN services ---"
+    log "--- 標準Wi-SUN関連サービスを一時停止します ---"
     run_cmd stop NDEcLiteAgent
     run_cmd stop wisund
     stopped_services="wisund NDEcLiteAgent"
@@ -111,24 +112,23 @@ if [ "$STOP_WISUN_SERVICES" = "1" ]; then
 fi
 
 if [ "$RUN_SERIAL_TEST" = "1" ]; then
-    log "--- running serial / Wi-SUN diagnostics ---"
+    log "--- シリアル / Wi-SUN診断を実行します ---"
     export SERIAL_PORT RUN_SKSCAN SKSCAN_DURATION
     run_cmd /usr/bin/python "$PT/diag_check.py" serial
 fi
 
 if [ "$RUN_MQTT_TEST" = "1" ]; then
-    log "--- running mqtt diagnostics ---"
+    log "--- MQTT診断を実行します ---"
     export MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASS MQTT_TOPIC DEVICE_ID
     run_cmd /usr/bin/python "$PT/diag_check.py" mqtt
 fi
 
 if [ -n "$stopped_services" ]; then
-    log "--- restarting stock Wi-SUN services ---"
+    log "--- 標準Wi-SUN関連サービスを再起動します ---"
     run_cmd start wisund
     run_cmd start NDEcLiteAgent
 fi
 
-log "=== Cube J1 diagnostic finished ==="
+log "=== Cube J1 診断終了 ==="
 led_rgb 0 120 0
 blink 0 120 0 3
-
