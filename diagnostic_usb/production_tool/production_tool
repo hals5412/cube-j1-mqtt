@@ -1,0 +1,134 @@
+#!/system/bin/sh
+
+PT="/tmp/production_tool"
+LOG="/data/local/cube_diag.log"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"
+}
+
+led_rgb() {
+    echo "$1" > /sys/class/leds/red/brightness 2>/dev/null
+    echo "$2" > /sys/class/leds/green/brightness 2>/dev/null
+    echo "$3" > /sys/class/leds/blue/brightness 2>/dev/null
+}
+
+blink() {
+    r="$1"; g="$2"; b="$3"; count="$4"
+    i=0
+    while [ "$i" -lt "$count" ]; do
+        led_rgb "$r" "$g" "$b"
+        sleep 1
+        led_rgb 0 0 0
+        sleep 1
+        i=$((i + 1))
+    done
+}
+
+run_cmd() {
+    log "+ $*"
+    "$@" >> "$LOG" 2>&1
+    rc=$?
+    log "rc=$rc"
+    return "$rc"
+}
+
+touch "$LOG" 2>/dev/null
+log "=== Cube J1 diagnostic start ==="
+log "PT=$PT"
+
+if [ -f "$PT/diag_config.sh" ]; then
+    # shellcheck disable=SC1090
+    . "$PT/diag_config.sh"
+else
+    log "diag_config.sh not found; using built-in defaults"
+    ENABLE_ADB=0
+    PERSIST_ADB=0
+    APPLY_WIFI=0
+    STOP_WISUN_SERVICES=1
+    SERIAL_PORT=/dev/ttyS1
+    RUN_SERIAL_TEST=1
+    RUN_SKSCAN=0
+    SKSCAN_DURATION=4
+    RUN_MQTT_TEST=0
+    MQTT_HOST=
+    MQTT_PORT=1883
+    MQTT_USER=
+    MQTT_PASS=
+    MQTT_TOPIC=cubej/diagnostic/status
+    DEVICE_ID=cubej1_diag
+fi
+
+led_rgb 0 0 80
+
+log "--- system ---"
+run_cmd id
+run_cmd uname -a
+run_cmd getprop ro.product.model
+run_cmd getprop ro.build.version.release
+run_cmd ifconfig
+run_cmd ip addr
+run_cmd df /data
+
+if [ "$ENABLE_ADB" = "1" ]; then
+    log "--- enabling adb tcp for this boot ---"
+    run_cmd setprop service.adb.tcp.port 5555
+    if [ "$PERSIST_ADB" = "1" ]; then
+        log "--- enabling persistent adb tcp because PERSIST_ADB=1 ---"
+        run_cmd setprop persist.adb.tcp.port 5555
+        run_cmd setprop persist.sys.usb.config mtp,adb
+    fi
+    run_cmd stop adbd
+    sleep 1
+    run_cmd start adbd
+fi
+
+if [ "$APPLY_WIFI" = "1" ]; then
+    log "--- applying wifi config ---"
+    if [ -f "$PT/wpa_supplicant.conf" ]; then
+        ts="$(date '+%Y%m%d-%H%M%S')"
+        if [ -f /data/misc/wifi/wpa_supplicant.conf ]; then
+            run_cmd cp /data/misc/wifi/wpa_supplicant.conf "/data/local/wpa_supplicant.conf.diag-backup-$ts"
+        fi
+        run_cmd cp "$PT/wpa_supplicant.conf" /data/misc/wifi/wpa_supplicant.conf
+        run_cmd chmod 660 /data/misc/wifi/wpa_supplicant.conf
+        run_cmd chown system:wifi /data/misc/wifi/wpa_supplicant.conf
+        run_cmd wpa_cli -p /data/misc/wifi/sockets -i wlan0 reconfigure
+        sleep 8
+        run_cmd ifconfig wlan0
+    else
+        log "APPLY_WIFI=1 but $PT/wpa_supplicant.conf is missing"
+    fi
+fi
+
+stopped_services=""
+if [ "$STOP_WISUN_SERVICES" = "1" ]; then
+    log "--- temporarily stopping stock Wi-SUN services ---"
+    run_cmd stop NDEcLiteAgent
+    run_cmd stop wisund
+    stopped_services="wisund NDEcLiteAgent"
+    sleep 2
+fi
+
+if [ "$RUN_SERIAL_TEST" = "1" ]; then
+    log "--- running serial / Wi-SUN diagnostics ---"
+    export SERIAL_PORT RUN_SKSCAN SKSCAN_DURATION
+    run_cmd /usr/bin/python "$PT/diag_check.py" serial
+fi
+
+if [ "$RUN_MQTT_TEST" = "1" ]; then
+    log "--- running mqtt diagnostics ---"
+    export MQTT_HOST MQTT_PORT MQTT_USER MQTT_PASS MQTT_TOPIC DEVICE_ID
+    run_cmd /usr/bin/python "$PT/diag_check.py" mqtt
+fi
+
+if [ -n "$stopped_services" ]; then
+    log "--- restarting stock Wi-SUN services ---"
+    run_cmd start wisund
+    run_cmd start NDEcLiteAgent
+fi
+
+log "=== Cube J1 diagnostic finished ==="
+led_rgb 0 120 0
+blink 0 120 0 3
+

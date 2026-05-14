@@ -1,0 +1,9 @@
+ctrl_interface=/data/misc/wifi/sockets
+update_config=1
+
+network={
+        ssid="YOUR_SSID"
+        psk="YOUR_WIFI_PASSWORD"
+        key_mgmt=WPA-PSK
+}
+
