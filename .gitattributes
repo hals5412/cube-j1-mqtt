@@ -1,0 +1,5 @@
+*.sh text eol=lf
+production_tool/production_tool text eol=lf
+rollback_usb/production_tool/production_tool text eol=lf
+diagnostic_usb/production_tool/production_tool text eol=lf
+*.py text eol=lf

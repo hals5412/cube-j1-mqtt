@@ -5,8 +5,8 @@
     "mqtt_port": 1883,
     "mqtt_user": "既存のMQTTユーザー名を入力",
     "mqtt_pass": "既存のMQTTパスワードを入力",
-    "device_id": "cubej1_site_a",
-    "display_name": "拠点A 電力メーター",
+    "device_id": "cubej1_site_b",
+    "display_name": "拠点B 電力メーター",
     "serial_port": "/dev/ttyS1",
     "poll_interval": 60
 }

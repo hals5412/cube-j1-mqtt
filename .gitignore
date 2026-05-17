@@ -1,3 +1,4 @@
 __pycache__/
 *.pyc
 diagnostic_usb/production_tool/wpa_supplicant.conf
+production_tool/wpa_supplicant.conf

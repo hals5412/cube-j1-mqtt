@@ -2,8 +2,7 @@ ctrl_interface=/data/misc/wifi/sockets
 update_config=1
 
 network={
-        ssid="YOUR_SSID"
-        psk="YOUR_WIFI_PASSWORD"
+        ssid="Wi-FiのSSIDを入力"
+        psk="Wi-Fiのパスワードを入力"
         key_mgmt=WPA-PSK
 }
-

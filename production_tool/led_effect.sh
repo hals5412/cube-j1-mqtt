@@ -1,13 +1,13 @@
 #!/system/bin/sh
-# led_effect.sh - RGB LED control for Cube J1 via sysfs
+# Cube J1のRGB LEDをsysfs経由で制御します。
 #
-# Usage:
+# 使い方:
 #   led_effect rainbow [cycles] [step_deg] [delay_ms]
 #   led_effect pulse   [color_name] [cycles]
 #   led_effect blink   [color_name] [count]
 #   led_effect set     <r> <g> <b>
 #
-# Each command saves the current LED state and restores it on exit.
+# 各コマンドは実行前のLED状態を保存し、終了時に復元します。
 
 LED_R=/sys/class/leds/red/brightness
 LED_G=/sys/class/leds/green/brightness
@@ -29,8 +29,8 @@ led_restore() {
     led_rgb "$orig_r" "$orig_g" "$orig_b"
 }
 
-# Integer HSV->RGB  (H:0-359, S:0-255, V:0-255)
-# Prints: R G B
+# 整数演算でHSVをRGBへ変換します。
+# 出力形式: R G B
 hsv_to_rgb() {
     h=$1 s=$2 v=$3
     if [ "$s" -eq 0 ]; then
@@ -54,8 +54,8 @@ hsv_to_rgb() {
 
 cmd_rainbow() {
     cycles=${1:-3}
-    step=${2:-5}      # degrees per frame (5=smooth, 15=fast)
-    delay_ms=${3:-40} # ms per frame
+    step=${2:-5}      # 1フレームあたりの角度
+    delay_ms=${3:-40} # 1フレームあたりの待機時間
 
     led_save
 
@@ -138,7 +138,7 @@ case "${1:-rainbow}" in
     blink)   shift; cmd_blink   "$@" ;;
     set)     led_rgb "${2:-0}" "${3:-0}" "${4:-0}" ;;
     *)
-        echo "Usage: led_effect {rainbow|pulse|blink|set} [args...]" >&2
+        echo "使い方: led_effect {rainbow|pulse|blink|set} [引数...]" >&2
         exit 1
         ;;
 esac

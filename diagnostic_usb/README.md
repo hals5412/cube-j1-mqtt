@@ -46,8 +46,8 @@ MQTT送信を確認する場合は、以下を設定します。
 RUN_MQTT_TEST=1
 MQTT_HOST=192.168.0.x
 MQTT_PORT=1883
-MQTT_USER=your_mqtt_user
-MQTT_PASS=your_mqtt_password
+MQTT_USER=MQTTユーザー名を入力
+MQTT_PASS=MQTTパスワードを入力
 MQTT_TOPIC=cubej/diagnostic/status
 ```
 

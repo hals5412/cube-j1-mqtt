@@ -1,0 +1,71 @@
+#!/system/bin/sh
+
+LOG="/data/local/cubej1_rollback.log"
+BACKUP_ROOT="/data/local/cubej1-backup"
+
+log() {
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"
+}
+
+fail() {
+    log "失敗: $*"
+    exit 1
+}
+
+run_cmd() {
+    log "+ $*"
+    "$@" >> "$LOG" 2>&1
+    rc=$?
+    log "rc=$rc"
+    return "$rc"
+}
+
+restore_file() {
+    src="$1"
+    dst="$2"
+    if [ -f "$src" ]; then
+        run_cmd cp "$src" "$dst" || fail "$dst の復元に失敗しました"
+    else
+        log "復元元がないためスキップします: $src"
+    fi
+}
+
+log "=== Cube J1 ロールバック開始 ==="
+
+if [ -f "$BACKUP_ROOT/latest" ]; then
+    BACKUP_DIR="$(cat "$BACKUP_ROOT/latest")"
+else
+    BACKUP_DIR="$(ls -d "$BACKUP_ROOT"/* 2>/dev/null | tail -n 1)"
+fi
+
+if [ -z "$BACKUP_DIR" ] || [ ! -d "$BACKUP_DIR" ]; then
+    fail "利用できるバックアップがありません"
+fi
+
+log "復元元: $BACKUP_DIR"
+
+run_cmd stop mqtt_ha_bridge
+run_cmd stop wisund
+run_cmd stop NDEcLiteAgent
+
+run_cmd mount -o rw,remount / || fail "rootファイルシステムの再マウントに失敗しました"
+
+restore_file "$BACKUP_DIR/wisund.rc" /system/etc/init/wisund.rc
+restore_file "$BACKUP_DIR/ndeclite_agent.rc" /system/etc/init/ndeclite_agent.rc
+
+if [ -f "$BACKUP_DIR/mqtt_ha_bridge.rc" ]; then
+    restore_file "$BACKUP_DIR/mqtt_ha_bridge.rc" /system/etc/init/mqtt_ha_bridge.rc
+else
+    run_cmd rm -f /system/etc/init/mqtt_ha_bridge.rc
+fi
+
+restore_file "$BACKUP_DIR/wpa_supplicant.conf" /data/misc/wifi/wpa_supplicant.conf
+
+run_cmd rm -f /data/local/config.json
+run_cmd rm -f /data/local/mqtt_bridge.py
+run_cmd rm -f /data/local/led_effect.sh
+
+run_cmd start wisund
+run_cmd start NDEcLiteAgent
+
+log "=== Cube J1 ロールバック完了 ==="
