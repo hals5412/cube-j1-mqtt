@@ -40,7 +40,12 @@ config.site_b.example.json
 
 ## Wi-Fi設定
 
-`wpa_supplicant.conf.example` を `wpa_supplicant.conf` にコピーして、SSIDとパスワードを入力します。
+[wpa_supplicant.conf](wpa_supplicant.conf) を直接編集します。以下の2か所に、自宅Wi-FiのSSIDとパスワードを入力してください。
+
+```conf
+ssid="Wi-FiのSSIDを入力"
+psk="Wi-Fiのパスワードを入力"
+```
 
 実際の `config.json` と `wpa_supplicant.conf` には秘密情報が入るため、取り扱いに注意してください。
 
