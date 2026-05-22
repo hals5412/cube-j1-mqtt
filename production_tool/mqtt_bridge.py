@@ -672,7 +672,8 @@ DIAGNOSTIC_SENSOR_DEFS = [
 ]
 
 def iso_now():
-    return time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    # Cube J1本体のタイムゾーン設定に依存せず、Home Assistant表示用にJSTで出します。
+    return time.strftime("%Y-%m-%dT%H:%M:%S+09:00", time.gmtime(time.time() + 9 * 60 * 60))
 
 def publish_ha_discovery(mqtt, device_id, display_name, poll_interval):
     device = {
