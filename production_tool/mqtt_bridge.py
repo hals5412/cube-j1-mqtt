@@ -462,7 +462,8 @@ def _encode_str(s):
 
 class MQTTClient(object):
     def __init__(self, host, port, client_id, username=None, password=None,
-                 will_topic=None, will_payload=None, will_retain=False):
+                 will_topic=None, will_payload=None, will_retain=False,
+                 keepalive=300):
         self.host      = host
         self.port      = port
         self.client_id = client_id
@@ -471,6 +472,7 @@ class MQTTClient(object):
         self.will_topic = will_topic
         self.will_payload = will_payload
         self.will_retain = will_retain
+        self.keepalive = keepalive
         self.sock      = None
         self._out_queue = collections.deque()
         self.reconnect_count = 0
@@ -504,7 +506,7 @@ class MQTTClient(object):
         var_hdr = (b"\x00\x04MQTT"
                    + b"\x04"
                    + struct.pack("B", flags)
-                   + b"\x00\x3C")   # keep-alive 60s
+                   + struct.pack(">H", int(self.keepalive)))
 
         payload = _encode_str(self.client_id)
         if self.will_topic:
@@ -723,6 +725,7 @@ def publish_measurements(mqtt, device_id, m):
 
 def publish_diagnostic(mqtt, device_id, data):
     base = "cubej/{}/diagnostic".format(device_id)
+    publish_status(mqtt, device_id, "online")
     for key, value in data.items():
         if value is None:
             continue
@@ -750,6 +753,7 @@ def main():
     display_name  = cfg.get("display_name", "Cube J1 Smart Meter")
     serial_port   = cfg.get("serial_port", "/dev/ttyS1")
     poll_interval = int(cfg.get("poll_interval", 60))
+    mqtt_keepalive = int(cfg.get("mqtt_keepalive", 300))
     start_time    = time.time()
     error_count   = 0
     last_error    = ""
@@ -762,7 +766,8 @@ def main():
                       username=ha_user, password=ha_pass,
                       will_topic="{}/status".format(base),
                       will_payload="offline",
-                      will_retain=True)
+                      will_retain=True,
+                      keepalive=mqtt_keepalive)
     while True:
         try:
             mqtt.connect()
