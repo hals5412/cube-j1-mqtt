@@ -750,6 +750,7 @@ def main():
     ha_user       = cfg.get("mqtt_user", "")
     ha_pass       = cfg.get("mqtt_pass", "")
     device_id     = cfg.get("device_id", "cubej1")
+    mqtt_client_id = cfg.get("mqtt_client_id", device_id)
     display_name  = cfg.get("display_name", "Cube J1 Smart Meter")
     serial_port   = cfg.get("serial_port", "/dev/ttyS1")
     poll_interval = int(cfg.get("poll_interval", 60))
@@ -762,7 +763,7 @@ def main():
     log("=== mqtt_bridge start device_id={} ===".format(device_id))
 
     base = "cubej/{}".format(device_id)
-    mqtt = MQTTClient(ha_host, ha_port, "cubej1_{}".format(device_id),
+    mqtt = MQTTClient(ha_host, ha_port, mqtt_client_id,
                       username=ha_user, password=ha_pass,
                       will_topic="{}/status".format(base),
                       will_payload="offline",

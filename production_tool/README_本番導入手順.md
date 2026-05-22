@@ -31,6 +31,8 @@ config.site_b.example.json
 拠点B: cubej1_site_b
 ```
 
+MQTTのクライアントIDも通常は `device_id` と同じ値になります。
+
 表示名は以下です。
 
 ```text
