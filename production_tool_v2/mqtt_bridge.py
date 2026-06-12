@@ -26,9 +26,11 @@ CONFIG_PATH = "/data/local/config.json"
 LOG_PATH    = "/data/local/mqtt_bridge.log"
 WISUN_INFO = {}
 
-# /dataパーティションを圧迫しないよう、ログはこのサイズで世代交代します。
-# 上限到達時に .1 へ退避し、旧 .1 は削除するため最大でも約2MBに収まります。
-LOG_MAX_BYTES   = 1024 * 1024
+# ログはこのサイズで世代交代します。上限到達時に .1 へ退避し、旧 .1 は
+# 削除するため、合計は最大でこの約2倍に収まります。
+# config.json の log_max_bytes でサイズ変更、log_enabled=false で
+# ファイル書き込み自体を無効化できます。
+LOG_MAX_BYTES   = 10 * 1024 * 1024
 LOG_BACKUP_PATH = LOG_PATH + ".1"
 
 LED_R = "/sys/class/leds/red/brightness"
@@ -819,13 +821,26 @@ def publish_diagnostic(mqtt, device_id, data):
 # ---------------------------------------------------------------------------
 
 def main():
-    global _log_file
+    global _log_file, LOG_MAX_BYTES
     try:
         _log_file = open(LOG_PATH, "a")
     except Exception:
         pass
 
     cfg           = load_config()
+
+    # ログ設定を反映します(最初のログ出力より前に行います)。
+    LOG_MAX_BYTES = int(cfg.get("log_max_bytes", LOG_MAX_BYTES))
+    if not cfg.get("log_enabled", True):
+        # ファイルへの書き込みを無効化し、標準エラーのみにします
+        # (initサービスとして動く場合は実質的にログなし)。
+        if _log_file:
+            try:
+                _log_file.close()
+            except Exception:
+                pass
+            _log_file = None
+
     br_id         = cfg["br_id"]
     br_pwd        = cfg["br_pwd"]
     ha_host       = cfg["mqtt_host"]
