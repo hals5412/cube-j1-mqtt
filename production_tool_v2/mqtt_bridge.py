@@ -949,12 +949,13 @@ def main():
                         coeff = m["coefficient"]
                     if "unit_kwh" in m:
                         unit_kwh = m["unit_kwh"]
-                    # 正常時の計測ログは間引き、起動・復旧後の初回は必ず残します。
-                    if time.time() - last_measurement_log >= MEASUREMENT_LOG_INTERVAL:
-                        log("Measurements: {}".format(
-                            {k: v for k, v in m.items()
-                             if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
-                                       "current_r_a", "current_t_a")}))
+                    display = {k: v for k, v in m.items()
+                               if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
+                                         "current_r_a", "current_t_a")}
+                    # 正常時の計測ログは間引きます。起動・復旧後の初回は、
+                    # 電力値を含む計測が取れた時点で必ず残します(空辞書は記録しません)。
+                    if display and time.time() - last_measurement_log >= MEASUREMENT_LOG_INTERVAL:
+                        log("Measurements: {}".format(display))
                         last_measurement_log = time.time()
                     publish_measurements(mqtt, device_id, m)
                     publish_status(mqtt, device_id, "online")
