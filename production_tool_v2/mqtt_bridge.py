@@ -241,6 +241,19 @@ REJOIN_BACKOFF_MAX = 300
 SERIAL_REOPEN_AFTER = 5
 
 # ---------------------------------------------------------------------------
+# 運用設定
+# ---------------------------------------------------------------------------
+
+# discovery設定をこの間隔で再publishします。ブローカー側のretainデータが
+# 消えた場合(MQTTブローカー再構築など)でも、本体を再起動せずエンティティが復元されます。
+# MQTT再接続後にも再publishします。
+DISCOVERY_REPUBLISH_INTERVAL = 24 * 60 * 60
+
+# 正常時の計測値ログはこの間隔に間引きます(エラーや状態変化は常に記録)。
+# ローテーション上限内でより長い期間の履歴を残すためです。
+MEASUREMENT_LOG_INTERVAL = 60 * 60
+
+# ---------------------------------------------------------------------------
 # SKSTACK-IP / Wi-SUN Bルート接続
 # ---------------------------------------------------------------------------
 
@@ -541,7 +554,9 @@ class MQTTClient(object):
         self.will_retain = will_retain
         self.keepalive = keepalive
         self.sock      = None
-        self._out_queue = collections.deque()
+        # 送信失敗時の再送キュー。古い値は最新値で代替できるため、
+        # 上限超過時は最も古いものから捨てます(メモリ肥大防止)。
+        self._out_queue = collections.deque(maxlen=1000)
         self.reconnect_count = 0
 
     def connect(self):
@@ -902,9 +917,23 @@ def main():
     unit_kwh  = 1.0
     last_ping = time.time()
     consecutive_timeouts = 0
+    last_discovery_publish = time.time()
+    last_reconnect_count = mqtt.reconnect_count
+    last_measurement_log = 0
 
     while True:
         try:
+            # MQTT再接続後、または24時間ごとにdiscoveryを再publishします。
+            # ブローカーのretainデータ消失時にエンティティを自動復元するためです。
+            if (mqtt.reconnect_count != last_reconnect_count
+                    or time.time() - last_discovery_publish > DISCOVERY_REPUBLISH_INTERVAL):
+                log("Republishing HA discovery (reconnect_count={})".format(
+                    mqtt.reconnect_count))
+                publish_ha_discovery(mqtt, device_id, display_name, poll_interval)
+                publish_status(mqtt, device_id, "online")
+                last_reconnect_count = mqtt.reconnect_count
+                last_discovery_publish = time.time()
+
             orig_led = led_read()
             led_rgb(0, 0, 255)
             try:
@@ -920,10 +949,13 @@ def main():
                         coeff = m["coefficient"]
                     if "unit_kwh" in m:
                         unit_kwh = m["unit_kwh"]
-                    log("Measurements: {}".format(
-                        {k: v for k, v in m.items()
-                         if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
-                                   "current_r_a", "current_t_a")}))
+                    # 正常時の計測ログは間引き、起動・復旧後の初回は必ず残します。
+                    if time.time() - last_measurement_log >= MEASUREMENT_LOG_INTERVAL:
+                        log("Measurements: {}".format(
+                            {k: v for k, v in m.items()
+                             if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
+                                       "current_r_a", "current_t_a")}))
+                        last_measurement_log = time.time()
                     publish_measurements(mqtt, device_id, m)
                     publish_status(mqtt, device_id, "online")
                     publish_diagnostic(mqtt, device_id, {
@@ -987,6 +1019,8 @@ def main():
                 try:
                     ipv6 = wisun_connect(fd, br_id, br_pwd)
                     wisun_reconnect_count += 1
+                    # 復旧後の初回計測を必ずログに残します。
+                    last_measurement_log = 0
                     log("Wi-SUN reconnected at {}".format(ipv6))
                     publish_diagnostic(mqtt, device_id, {
                         "wisun_status": "connected",
