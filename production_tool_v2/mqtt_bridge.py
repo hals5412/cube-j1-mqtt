@@ -26,6 +26,11 @@ CONFIG_PATH = "/data/local/config.json"
 LOG_PATH    = "/data/local/mqtt_bridge.log"
 WISUN_INFO = {}
 
+# /dataパーティションを圧迫しないよう、ログはこのサイズで世代交代します。
+# 上限到達時に .1 へ退避し、旧 .1 は削除するため最大でも約2MBに収まります。
+LOG_MAX_BYTES   = 1024 * 1024
+LOG_BACKUP_PATH = LOG_PATH + ".1"
+
 LED_R = "/sys/class/leds/red/brightness"
 LED_G = "/sys/class/leds/green/brightness"
 LED_B = "/sys/class/leds/blue/brightness"
@@ -50,10 +55,35 @@ def led_read():
 
 _log_file = None
 
+def _rotate_log_if_needed():
+    """ログが上限を超えていたら .1 へ退避して開き直します。"""
+    global _log_file
+    if not _log_file:
+        return
+    try:
+        if os.fstat(_log_file.fileno()).st_size < LOG_MAX_BYTES:
+            return
+        _log_file.close()
+        if os.path.exists(LOG_BACKUP_PATH):
+            os.remove(LOG_BACKUP_PATH)
+        os.rename(LOG_PATH, LOG_BACKUP_PATH)
+        _log_file = open(LOG_PATH, "a")
+    except Exception:
+        # ローテーション失敗時もログ自体は続行します。
+        try:
+            _log_file = open(LOG_PATH, "a")
+        except Exception:
+            _log_file = None
+
 def log(msg):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = "[{}] {}\n".format(ts, msg)
     global _log_file
+    if _log_file:
+        try:
+            _rotate_log_if_needed()
+        except Exception:
+            pass
     if _log_file:
         try:
             _log_file.write(line)
