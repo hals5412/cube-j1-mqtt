@@ -26,6 +26,13 @@ CONFIG_PATH = "/data/local/config.json"
 LOG_PATH    = "/data/local/mqtt_bridge.log"
 WISUN_INFO = {}
 
+# ログはこのサイズで世代交代します。上限到達時に .1 へ退避し、旧 .1 は
+# 削除するため、合計は最大でこの約2倍に収まります。
+# config.json の log_max_bytes でサイズ変更、log_enabled=false で
+# ファイル書き込み自体を無効化できます。
+LOG_MAX_BYTES   = 10 * 1024 * 1024
+LOG_BACKUP_PATH = LOG_PATH + ".1"
+
 LED_R = "/sys/class/leds/red/brightness"
 LED_G = "/sys/class/leds/green/brightness"
 LED_B = "/sys/class/leds/blue/brightness"
@@ -50,10 +57,35 @@ def led_read():
 
 _log_file = None
 
+def _rotate_log_if_needed():
+    """ログが上限を超えていたら .1 へ退避して開き直します。"""
+    global _log_file
+    if not _log_file:
+        return
+    try:
+        if os.fstat(_log_file.fileno()).st_size < LOG_MAX_BYTES:
+            return
+        _log_file.close()
+        if os.path.exists(LOG_BACKUP_PATH):
+            os.remove(LOG_BACKUP_PATH)
+        os.rename(LOG_PATH, LOG_BACKUP_PATH)
+        _log_file = open(LOG_PATH, "a")
+    except Exception:
+        # ローテーション失敗時もログ自体は続行します。
+        try:
+            _log_file = open(LOG_PATH, "a")
+        except Exception:
+            _log_file = None
+
 def log(msg):
     ts = time.strftime("%Y-%m-%d %H:%M:%S")
     line = "[{}] {}\n".format(ts, msg)
     global _log_file
+    if _log_file:
+        try:
+            _rotate_log_if_needed()
+        except Exception:
+            pass
     if _log_file:
         try:
             _log_file.write(line)
@@ -119,6 +151,20 @@ def open_serial(port, baud=115200):
     termios.tcflush(fd, termios.TCIOFLUSH)
     return fd
 
+def reopen_serial(fd, port):
+    """シリアルポートを閉じて開き直し、新しいfdを返します。"""
+    log("Reopening serial {}".format(port))
+    try:
+        os.close(fd)
+    except Exception:
+        pass
+    while True:
+        try:
+            return open_serial(port)
+        except Exception as e:
+            log("Serial reopen failed: {} - retry in 10s".format(e))
+            time.sleep(10)
+
 def serial_write(fd, data):
     if isinstance(data, bytes):
         os.write(fd, data)
@@ -183,6 +229,31 @@ def skcommand(fd, cmd, timeout=10):
 
 SCAN_DURATION_BASE = 4
 SCAN_RETRY_LIMIT = 10
+
+# ---------------------------------------------------------------------------
+# 自己復旧設定
+# ---------------------------------------------------------------------------
+
+# ERXUDP無応答がこの回数連続したら、ポーリング継続をやめてWi-SUN再joinへ移行します。
+TIMEOUT_REJOIN_THRESHOLD = 3
+# 再join失敗時のリトライ間隔(秒)。失敗のたびに2倍し、上限で頭打ちにします。
+REJOIN_BACKOFF_INITIAL = 30
+REJOIN_BACKOFF_MAX = 300
+# join/再joinの失敗がこの回数連続するたびに、シリアルポートを開き直します。
+SERIAL_REOPEN_AFTER = 5
+
+# ---------------------------------------------------------------------------
+# 運用設定
+# ---------------------------------------------------------------------------
+
+# discovery設定をこの間隔で再publishします。ブローカー側のretainデータが
+# 消えた場合(MQTTブローカー再構築など)でも、本体を再起動せずエンティティが復元されます。
+# MQTT再接続後にも再publishします。
+DISCOVERY_REPUBLISH_INTERVAL = 24 * 60 * 60
+
+# 正常時の計測値ログはこの間隔に間引きます(エラーや状態変化は常に記録)。
+# ローテーション上限内でより長い期間の履歴を残すためです。
+MEASUREMENT_LOG_INTERVAL = 60 * 60
 
 # ---------------------------------------------------------------------------
 # SKSTACK-IP / Wi-SUN Bルート接続
@@ -421,11 +492,22 @@ def send_el_get(fd, ipv6, tid):
     serial_write(fd, b"\r\n")
 
 def read_erxudp(fd, timeout=15):
-    """ERXUDPを待ち、payloadをbytearrayで返します。"""
+    """ERXUDPを待ち、payloadをbytearrayで返します。
+
+    PANA認証失敗(EVENT 24)を受信した場合は例外を投げ、
+    呼び出し側のWi-SUN再join処理へ移行させます。
+    """
     deadline = time.time() + timeout
     while time.time() < deadline:
         line = serial_readline(fd, timeout=max(0.5, deadline - time.time()))
         if line is None:
+            continue
+        if line.startswith("EVENT 24"):
+            raise RuntimeError("PANA authentication failed during polling (EVENT 24)")
+        if line.startswith("EVENT 29"):
+            # セッション失効。モジュールが自動再認証を試みるためログのみ残します。
+            # 再認証に失敗した場合はEVENT 24か連続タイムアウトで再joinへ移行します。
+            log("PANA session expired (EVENT 29) - waiting for automatic re-auth")
             continue
         if line.startswith("ERXUDP"):
             parts = line.split()
@@ -474,7 +556,9 @@ class MQTTClient(object):
         self.will_retain = will_retain
         self.keepalive = keepalive
         self.sock      = None
-        self._out_queue = collections.deque()
+        # 送信失敗時の再送キュー。古い値は最新値で代替できるため、
+        # 上限超過時は最も古いものから捨てます(メモリ肥大防止)。
+        self._out_queue = collections.deque(maxlen=1000)
         self.reconnect_count = 0
 
     def connect(self):
@@ -737,13 +821,26 @@ def publish_diagnostic(mqtt, device_id, data):
 # ---------------------------------------------------------------------------
 
 def main():
-    global _log_file
+    global _log_file, LOG_MAX_BYTES
     try:
         _log_file = open(LOG_PATH, "a")
     except Exception:
         pass
 
     cfg           = load_config()
+
+    # ログ設定を反映します(最初のログ出力より前に行います)。
+    LOG_MAX_BYTES = int(cfg.get("log_max_bytes", LOG_MAX_BYTES))
+    if not cfg.get("log_enabled", True):
+        # ファイルへの書き込みを無効化し、標準エラーのみにします
+        # (initサービスとして動く場合は実質的にログなし)。
+        if _log_file:
+            try:
+                _log_file.close()
+            except Exception:
+                pass
+            _log_file = None
+
     br_id         = cfg["br_id"]
     br_pwd        = cfg["br_pwd"]
     ha_host       = cfg["mqtt_host"]
@@ -802,6 +899,7 @@ def main():
 
     # Wi-SUN Bルートへ接続します。
     ipv6 = None
+    join_failures = 0
     while True:
         try:
             ipv6 = wisun_connect(fd, br_id, br_pwd)
@@ -815,13 +913,16 @@ def main():
             break
         except Exception as e:
             error_count += 1
+            join_failures += 1
             last_error = "Wi-SUN join failed: {}".format(e)
-            log("{} - retry in 60s".format(last_error))
+            log("{} (attempt {}) - retry in 60s".format(last_error, join_failures))
             publish_diagnostic(mqtt, device_id, {
                 "wisun_status": "join_failed",
                 "error_count": error_count,
                 "last_error": last_error,
             })
+            if join_failures % SERIAL_REOPEN_AFTER == 0:
+                fd = reopen_serial(fd, serial_port)
             time.sleep(60)
 
     log("Meter connected at {}".format(ipv6))
@@ -830,9 +931,24 @@ def main():
     coeff     = 1
     unit_kwh  = 1.0
     last_ping = time.time()
+    consecutive_timeouts = 0
+    last_discovery_publish = time.time()
+    last_reconnect_count = mqtt.reconnect_count
+    last_measurement_log = 0
 
     while True:
         try:
+            # MQTT再接続後、または24時間ごとにdiscoveryを再publishします。
+            # ブローカーのretainデータ消失時にエンティティを自動復元するためです。
+            if (mqtt.reconnect_count != last_reconnect_count
+                    or time.time() - last_discovery_publish > DISCOVERY_REPUBLISH_INTERVAL):
+                log("Republishing HA discovery (reconnect_count={})".format(
+                    mqtt.reconnect_count))
+                publish_ha_discovery(mqtt, device_id, display_name, poll_interval)
+                publish_status(mqtt, device_id, "online")
+                last_reconnect_count = mqtt.reconnect_count
+                last_discovery_publish = time.time()
+
             orig_led = led_read()
             led_rgb(0, 0, 255)
             try:
@@ -840,6 +956,7 @@ def main():
                 tid = (tid + 1) & 0xFFFF
                 data = read_erxudp(fd, timeout=15)
                 if data:
+                    consecutive_timeouts = 0
                     props = parse_el_response(data)
                     m     = decode_measurements(props)
                     m     = apply_energy_scale(m, coeff, unit_kwh)
@@ -847,10 +964,14 @@ def main():
                         coeff = m["coefficient"]
                     if "unit_kwh" in m:
                         unit_kwh = m["unit_kwh"]
-                    log("Measurements: {}".format(
-                        {k: v for k, v in m.items()
-                         if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
-                                   "current_r_a", "current_t_a")}))
+                    display = {k: v for k, v in m.items()
+                               if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
+                                         "current_r_a", "current_t_a")}
+                    # 正常時の計測ログは間引きます。起動・復旧後の初回は、
+                    # 電力値を含む計測が取れた時点で必ず残します(空辞書は記録しません)。
+                    if display and time.time() - last_measurement_log >= MEASUREMENT_LOG_INTERVAL:
+                        log("Measurements: {}".format(display))
+                        last_measurement_log = time.time()
                     publish_measurements(mqtt, device_id, m)
                     publish_status(mqtt, device_id, "online")
                     publish_diagnostic(mqtt, device_id, {
@@ -869,7 +990,9 @@ def main():
                         "energy_unit": unit_kwh,
                     })
                 else:
-                    log("No ERXUDP response (timeout)")
+                    consecutive_timeouts += 1
+                    log("No ERXUDP response (timeout {}/{})".format(
+                        consecutive_timeouts, TIMEOUT_REJOIN_THRESHOLD))
                     error_count += 1
                     last_error = "No ERXUDP response"
                     publish_diagnostic(mqtt, device_id, {
@@ -878,6 +1001,12 @@ def main():
                         "error_count": error_count,
                         "last_error": last_error,
                     })
+                    if consecutive_timeouts >= TIMEOUT_REJOIN_THRESHOLD:
+                        # タイムアウトだけが続く場合、PANAセッションが死んでいる
+                        # 可能性が高いため、ポーリングをやめて再joinへ移行します。
+                        raise RuntimeError(
+                            "No ERXUDP response x{} - forcing Wi-SUN rejoin".format(
+                                consecutive_timeouts))
             finally:
                 led_rgb(*orig_led)
 
@@ -890,34 +1019,51 @@ def main():
         except Exception as e:
             error_count += 1
             last_error = "Main loop error: {}".format(e)
-            log("{} - reconnecting Wi-SUN in 30s".format(last_error))
+            log("{} - reconnecting Wi-SUN in {}s".format(last_error, REJOIN_BACKOFF_INITIAL))
             publish_diagnostic(mqtt, device_id, {
                 "wisun_status": "reconnecting",
                 "error_count": error_count,
                 "last_error": last_error,
             })
-            time.sleep(30)
-            try:
-                ipv6 = wisun_connect(fd, br_id, br_pwd)
-                wisun_reconnect_count += 1
-                log("Wi-SUN reconnected at {}".format(ipv6))
-                publish_diagnostic(mqtt, device_id, {
-                    "wisun_status": "connected",
-                    "wisun_reconnect_count": wisun_reconnect_count,
-                    "channel": WISUN_INFO.get("channel"),
-                    "pan_id": WISUN_INFO.get("pan_id"),
-                    "lqi": WISUN_INFO.get("lqi"),
-                    "meter_ipv6": ipv6,
-                })
-            except Exception as e2:
-                error_count += 1
-                last_error = "Wi-SUN reconnect failed: {}".format(e2)
-                log(last_error)
-                publish_diagnostic(mqtt, device_id, {
-                    "wisun_status": "reconnect_failed",
-                    "error_count": error_count,
-                    "last_error": last_error,
-                })
+            consecutive_timeouts = 0
+            backoff = REJOIN_BACKOFF_INITIAL
+            rejoin_failures = 0
+            time.sleep(backoff)
+            # 再joinに成功するまでバックオフ付きでリトライし続けます。
+            # 死んだセッションへのポーリングには戻りません。
+            while True:
+                try:
+                    ipv6 = wisun_connect(fd, br_id, br_pwd)
+                    wisun_reconnect_count += 1
+                    # 復旧後の初回計測を必ずログに残します。
+                    last_measurement_log = 0
+                    log("Wi-SUN reconnected at {}".format(ipv6))
+                    publish_diagnostic(mqtt, device_id, {
+                        "wisun_status": "connected",
+                        "wisun_reconnect_count": wisun_reconnect_count,
+                        "channel": WISUN_INFO.get("channel"),
+                        "pan_id": WISUN_INFO.get("pan_id"),
+                        "lqi": WISUN_INFO.get("lqi"),
+                        "meter_ipv6": ipv6,
+                    })
+                    break
+                except Exception as e2:
+                    error_count += 1
+                    rejoin_failures += 1
+                    last_error = "Wi-SUN reconnect failed: {}".format(e2)
+                    log("{} (attempt {}) - retry in {}s".format(
+                        last_error, rejoin_failures, backoff))
+                    publish_diagnostic(mqtt, device_id, {
+                        "wisun_status": "reconnect_failed",
+                        "error_count": error_count,
+                        "last_error": last_error,
+                    })
+                    if rejoin_failures % SERIAL_REOPEN_AFTER == 0:
+                        fd = reopen_serial(fd, serial_port)
+                    # 長いバックオフ中もMQTT接続を維持します。
+                    mqtt.ping()
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, REJOIN_BACKOFF_MAX)
 
 
 if __name__ == "__main__":

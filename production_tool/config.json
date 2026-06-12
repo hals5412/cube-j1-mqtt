@@ -8,5 +8,7 @@
     "device_id": "cubej1_site_a",
     "display_name": "拠点A 電力メーター",
     "serial_port": "/dev/ttyS1",
-    "poll_interval": 60
+    "poll_interval": 60,
+    "log_enabled": true,
+    "log_max_bytes": 10485760
 }

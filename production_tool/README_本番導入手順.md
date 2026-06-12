@@ -89,11 +89,14 @@ production_tool/
 
 ## ADB TCP
 
-通常は `install_config.sh` の以下を維持してください。
+インストーラは、導入のたびにADB TCP(ポート5555)を `install_config.sh` の値どおりの状態へ必ず揃えます。過去の導入で永続化した設定が残っていても、上書き・解除されます。
 
-```sh
-ENABLE_ADB=0
-PERSIST_ADB=0
-```
+| ENABLE_ADB | PERSIST_ADB | 動作 |
+|---|---|---|
+| 0 | - | 無効(過去の永続設定も解除) |
+| 1 | 0 | 今回の起動中のみ有効(再起動で無効に戻る) |
+| 1 | 1 | 有効を永続化(再起動後も維持) |
 
-トラブル時に一時的にログを読みたい場合だけ `ENABLE_ADB=1` にします。`PERSIST_ADB=1` は、電源再投入後もADB TCPが開くため通常は使いません。
+トラブル時に一時的にログを読みたいだけなら `ENABLE_ADB=1, PERSIST_ADB=0`、遠隔復旧手段(`adb reboot` 等)を常設するなら両方1にします。永続有効はLAN内に無認証rootアクセスを開くため、ネットワークの信頼性を確認のうえ判断してください。
+
+注意: `PERSIST_ADB=1` で設定される `persist.sys.usb.config`(USBケーブル側のADB)は、無効化時もそのまま残します(TCP側の閉鎖が主目的のため)。

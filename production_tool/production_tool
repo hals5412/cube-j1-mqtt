@@ -82,18 +82,27 @@ echo "installed_at=$(date '+%Y-%m-%d %H:%M:%S')" > "$BACKUP_DIR/install_manifest
 run_cmd cp "$PT/led_effect.sh" /data/local/led_effect.sh || fail "led_effect.sh の配置に失敗しました"
 run_cmd chmod 755 /data/local/led_effect.sh || fail "led_effect.sh の権限設定に失敗しました"
 
+# ADB TCPはinstall_config.shの値どおりに必ず状態を揃えます。
+# 過去の導入で永続化された設定が残っていても、ここで上書き・解除されます。
 if [ "$ENABLE_ADB" = "1" ]; then
-    log "ADB TCPを今回の起動中だけ有効化します"
+    log "ADB TCPを有効化します"
     run_cmd setprop service.adb.tcp.port 5555 || fail "ADB TCPの有効化に失敗しました"
     if [ "$PERSIST_ADB" = "1" ]; then
         log "PERSIST_ADB=1 のため、ADB TCP設定を永続化します"
         run_cmd setprop persist.adb.tcp.port 5555 || fail "ADB TCP永続設定に失敗しました"
         run_cmd setprop persist.sys.usb.config mtp,adb || fail "USB設定の永続化に失敗しました"
+    else
+        log "PERSIST_ADB=0 のため、永続設定を解除します(今回の起動中のみ有効)"
+        run_cmd setprop persist.adb.tcp.port -1
     fi
-    run_cmd stop adbd
-    sleep 1
-    run_cmd start adbd || fail "adbd の起動に失敗しました"
+else
+    log "ENABLE_ADB=0 のため、ADB TCPを無効化します(永続設定も解除)"
+    run_cmd setprop service.adb.tcp.port -1
+    run_cmd setprop persist.adb.tcp.port -1
 fi
+run_cmd stop adbd
+sleep 1
+run_cmd start adbd || fail "adbd の起動に失敗しました"
 
 if [ "$APPLY_WIFI" = "1" ]; then
     log "Wi-Fi設定を適用します"

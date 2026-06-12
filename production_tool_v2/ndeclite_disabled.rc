@@ -1,5 +1,0 @@
-service NDEcLiteAgent /usr/sbin/ndeclite_agent
-    class late_start
-    disabled
-    group root system readproc
-    seclabel u:r:shell:s0
