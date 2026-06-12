@@ -1,5 +1,5 @@
 __pycache__/
 *.pyc
 diagnostic_usb/production_tool/wpa_supplicant.conf
-production_tool/config.site_b.example.json
-production_tool/config.site_a.example.json
+# 台ごとの実設定(認証情報を含む)はGit管理から除外する
+production_tool/config.*.json

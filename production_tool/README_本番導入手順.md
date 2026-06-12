@@ -10,35 +10,18 @@
 - 導入時に標準rcファイルとWi-Fi設定を `/data/local/cubej1-backup/` へバックアップします。
 - ロールバックは `rollback_usb/` の構成をUSBメモリへコピーして実行します。
 
-## 拠点A/拠点Bの設定
+## 設定(複数台運用)
 
-拠点A用は以下を `config.json` としてコピーしてから、認証情報を入力します。
+[config.json](config.json) を編集して、Bルート認証情報とMQTT接続先を入力します。
 
-```text
-config.site_a.example.json
-```
+Cube J1を複数台運用する場合(例: 自宅と別拠点のスマートメーターをそれぞれ監視する場合)は、台ごとに以下を一意に設定します。
 
-拠点B用は以下を使います。
+- `device_id`: HA上のデバイス識別子(例: `cubej1_home`、`cubej1_cottage`)
+- `display_name`: HA上の表示名(例: `自宅 電力メーター`)
 
-```text
-config.site_b.example.json
-```
+MQTTのクライアントIDは通常 `device_id` と同じ値になります(`mqtt_client_id` で個別指定も可能)。
 
-`device_id` は以下で固定する方針です。
-
-```text
-拠点A: cubej1_site_a
-拠点B: cubej1_site_b
-```
-
-MQTTのクライアントIDも通常は `device_id` と同じ値になります。
-
-表示名は以下です。
-
-```text
-拠点A 電力メーター
-拠点B 電力メーター
-```
+台ごとの設定ファイルは `config.<名前>.json` のように複製して手元で管理し、導入時に対象の内容を `config.json` へコピーすると運用しやすくなります(認証情報を含むファイルはGit管理から除外してください)。
 
 ## Wi-Fi設定
 
