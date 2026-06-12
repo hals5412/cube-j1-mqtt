@@ -1,0 +1,12 @@
+{
+    "br_id": "Bルート認証IDを入力",
+    "br_pwd": "Bルートパスワードを入力",
+    "mqtt_host": "Home AssistantまたはMQTTブローカーのIPアドレス",
+    "mqtt_port": 1883,
+    "mqtt_user": "既存のMQTTユーザー名を入力",
+    "mqtt_pass": "既存のMQTTパスワードを入力",
+    "device_id": "cubej1_site_a",
+    "display_name": "拠点A 電力メーター",
+    "serial_port": "/dev/ttyS1",
+    "poll_interval": 60
+}

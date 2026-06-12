@@ -3,3 +3,5 @@ __pycache__/
 diagnostic_usb/production_tool/wpa_supplicant.conf
 production_tool/config.site_b.example.json
 production_tool/config.site_a.example.json
+production_tool_v2/config.site_b.example.json
+production_tool_v2/config.site_a.example.json
