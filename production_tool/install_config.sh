@@ -19,3 +19,10 @@ START_BRIDGE=1
 # 常駐デーモン群を停止・無効化します。オフライン電力監視には不要です。
 # 0にすると無効化をスキップします(標準のクラウド挙動を残す場合)。
 DISABLE_CLOUD=1
+
+# tlsdated(TLS時刻同期)の同期先を生きた公開TLSホストへ向け直します。
+# 既定の同期先は newsignaling.nextdrive.io(終了済み)で同期不能なため、
+# 向け直すと時刻同期が復活し、同時にnextdriveへのDNSクエリもなくなります。
+# 0にすると向け直しをスキップします(標準のtlsdated挙動を残す場合)。
+REPOINT_TLSDATE=1
+TLSDATE_HOST="www.google.com"

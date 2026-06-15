@@ -47,6 +47,8 @@ PERSIST_ADB=0
 APPLY_WIFI=1
 START_BRIDGE=1
 DISABLE_CLOUD=1
+REPOINT_TLSDATE=1
+TLSDATE_HOST="www.google.com"
 
 # 無効化するNextDriveクラウド系サービス(終了済みクラウドへ延々と接続を試み、
 # DNSクエリを撒き散らすため)。オフラインのWi-SUN→MQTT電力監視には不要。
@@ -85,6 +87,9 @@ if [ "$DISABLE_CLOUD" = "1" ]; then
     for svc in $CLOUD_SERVICES; do
         copy_if_exists "/system/etc/init/$svc.rc" "$BACKUP_DIR/$svc.rc"
     done
+fi
+if [ "$REPOINT_TLSDATE" = "1" ]; then
+    copy_if_exists /system/etc/init/tlsdated.rc "$BACKUP_DIR/tlsdated.rc"
 fi
 echo "$BACKUP_DIR" > "$BACKUP_ROOT/latest"
 echo "installed_at=$(date '+%Y-%m-%d %H:%M:%S')" > "$BACKUP_DIR/install_manifest.txt"
@@ -152,6 +157,22 @@ if [ "$DISABLE_CLOUD" = "1" ]; then
             log "クラウド無効化rcが見つかりません(スキップ): $svc.rc"
         fi
     done
+fi
+
+if [ "$REPOINT_TLSDATE" = "1" ] && [ -f "$PT/tlsdated_timesync.rc" ]; then
+    # tlsdatedの時刻ソースは既定でnewsignaling.nextdrive.io(終了済み)に
+    # ハードコードされ同期不能。生きた公開TLSホストへ向け直し、時刻同期を
+    # 復活させると同時にnextdriveへのDNSクエリをなくす。
+    log "tlsdateの時刻同期先を $TLSDATE_HOST へ向け直します"
+    run_cmd cp "$PT/tlsdated_timesync.rc" /system/etc/init/tlsdated.rc || fail "tlsdated.rc の配置に失敗しました"
+    if [ "$TLSDATE_HOST" != "www.google.com" ]; then
+        run_cmd sed -i "s/www\\.google\\.com/$TLSDATE_HOST/g" /system/etc/init/tlsdated.rc
+    fi
+    run_cmd chmod 644 /system/etc/init/tlsdated.rc
+    # 旧設定(newsignaling向け)のtlsdatedを止める。新rcは再起動後に有効化される。
+    run_cmd stop tlsdated
+    # 今すぐ一度だけ同期して時計を合わせておく。
+    run_cmd /usr/sbin/tlsdate -C /etc/ssl/certs -l -v -H "$TLSDATE_HOST" -p 443
 fi
 
 if [ "$START_BRIDGE" = "1" ]; then

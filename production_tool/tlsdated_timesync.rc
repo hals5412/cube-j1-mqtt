@@ -1,0 +1,8 @@
+on post-fs-data
+    mkdir /data/misc/tlsdated 0755 root system
+
+service tlsdated /usr/sbin/tlsdated -v -a 3600 -c /data/misc/tlsdated -G dbus,inet -- /usr/sbin/tlsdate -C /etc/ssl/certs -l -v -H www.google.com -p 443
+    class late_start
+    user root
+    group system
+    seclabel u:r:shell:s0
