@@ -46,6 +46,11 @@ ENABLE_ADB=0
 PERSIST_ADB=0
 APPLY_WIFI=1
 START_BRIDGE=1
+DISABLE_CLOUD=1
+
+# 無効化するNextDriveクラウド系サービス(終了済みクラウドへ延々と接続を試み、
+# DNSクエリを撒き散らすため)。オフラインのWi-SUN→MQTT電力監視には不要。
+CLOUD_SERVICES="sessiond fms fmssecman NDCloudDaemon rds iijschedule transman"
 
 touch "$LOG" 2>/dev/null
 log "=== Cube J1 本番導入開始 ==="
@@ -76,6 +81,11 @@ copy_if_exists /data/misc/wifi/wpa_supplicant.conf "$BACKUP_DIR/wpa_supplicant.c
 copy_if_exists /data/local/config.json "$BACKUP_DIR/config.json"
 copy_if_exists /data/local/mqtt_bridge.py "$BACKUP_DIR/mqtt_bridge.py"
 copy_if_exists /data/local/led_effect.sh "$BACKUP_DIR/led_effect.sh"
+if [ "$DISABLE_CLOUD" = "1" ]; then
+    for svc in $CLOUD_SERVICES; do
+        copy_if_exists "/system/etc/init/$svc.rc" "$BACKUP_DIR/$svc.rc"
+    done
+fi
 echo "$BACKUP_DIR" > "$BACKUP_ROOT/latest"
 echo "installed_at=$(date '+%Y-%m-%d %H:%M:%S')" > "$BACKUP_DIR/install_manifest.txt"
 
@@ -130,6 +140,19 @@ run_cmd cp "$PT/mqtt_ha_bridge.rc" /system/etc/init/mqtt_ha_bridge.rc || fail "m
 run_cmd stop wisund
 run_cmd stop NDEcLiteAgent
 sleep 2
+
+if [ "$DISABLE_CLOUD" = "1" ]; then
+    log "NextDriveクラウド系サービスを無効化します(DNSクエリ抑止)"
+    for svc in $CLOUD_SERVICES; do
+        if [ -f "$PT/cloud_disabled/$svc.rc" ]; then
+            run_cmd cp "$PT/cloud_disabled/$svc.rc" "/system/etc/init/$svc.rc" || fail "$svc.rc の配置に失敗しました"
+            run_cmd chmod 644 "/system/etc/init/$svc.rc"
+            run_cmd stop "$svc"
+        else
+            log "クラウド無効化rcが見つかりません(スキップ): $svc.rc"
+        fi
+    done
+fi
 
 if [ "$START_BRIDGE" = "1" ]; then
     log "MQTTブリッジを起動します"
