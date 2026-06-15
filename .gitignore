@@ -1,7 +1,9 @@
 __pycache__/
 *.pyc
 diagnostic_usb/production_tool/wpa_supplicant.conf
-# 台ごとの実設定(認証情報を含む)はGit管理から除外する
+# 認証情報を含む実設定はGit管理から除外し、.exampleのみ追跡する
+production_tool/config.json
+# 台ごとの実設定(認証情報を含む)も除外する
 production_tool/config.*.json
 # Wi-Fi認証情報を含む実ファイルは除外し、.exampleのみ追跡する
 production_tool/wpa_supplicant.conf

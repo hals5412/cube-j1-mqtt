@@ -12,7 +12,7 @@
 
 ## 設定(複数台運用)
 
-[config.json](config.json) を編集して、Bルート認証情報とMQTT接続先を入力します。
+[config.json.example](config.json.example) を `config.json` にコピーしてから編集し、Bルート認証情報とMQTT接続先を入力します(実ファイル `config.json` は認証情報を含むためGit管理対象外)。
 
 Cube J1を複数台運用する場合(例: 自宅と別拠点のスマートメーターをそれぞれ監視する場合)は、台ごとに以下を一意に設定します。
 
