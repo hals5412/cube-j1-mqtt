@@ -25,14 +25,14 @@ MQTTのクライアントIDは通常 `device_id` と同じ値になります(`mq
 
 ## Wi-Fi設定
 
-[wpa_supplicant.conf](wpa_supplicant.conf) を直接編集します。以下の2か所に、自宅Wi-FiのSSIDとパスワードを入力してください。
+[wpa_supplicant.conf.example](wpa_supplicant.conf.example) を `wpa_supplicant.conf` にコピーしてから編集します。以下の2か所に、自宅Wi-FiのSSIDとパスワードを入力してください。
 
 ```conf
 ssid="Wi-FiのSSIDを入力"
 psk="Wi-Fiのパスワードを入力"
 ```
 
-実際の `config.json` と `wpa_supplicant.conf` には秘密情報が入るため、取り扱いに注意してください。
+実際の `config.json` と `wpa_supplicant.conf` には秘密情報が入るため、Git管理対象外です(`.gitignore` 済み)。取り扱いに注意してください。
 
 ## USBメモリへの配置
 

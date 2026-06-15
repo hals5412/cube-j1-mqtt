@@ -5,3 +5,4 @@ diagnostic_usb/production_tool/production_tool text eol=lf
 *.py text eol=lf
 *.rc text eol=lf
 *.conf text eol=lf
+*.conf.example text eol=lf
