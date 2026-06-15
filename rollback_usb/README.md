@@ -20,6 +20,14 @@ production_tool/
 - `/system/etc/init/wisund.rc`
 - `/system/etc/init/ndeclite_agent.rc`
 - `/system/etc/init/mqtt_ha_bridge.rc`
+- `/system/etc/init/sessiond.rc`
+- `/system/etc/init/fms.rc`
+- `/system/etc/init/fmssecman.rc`
+- `/system/etc/init/NDCloudDaemon.rc`
+- `/system/etc/init/rds.rc`
+- `/system/etc/init/iijschedule.rc`
+- `/system/etc/init/transman.rc`
+- `/system/etc/init/tlsdated.rc`
 - `/data/misc/wifi/wpa_supplicant.conf`
 
 MQTTブリッジ関連の `/data/local/config.json`、`/data/local/mqtt_bridge.py`、`/data/local/led_effect.sh` は削除します。

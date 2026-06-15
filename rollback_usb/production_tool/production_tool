@@ -2,6 +2,7 @@
 
 LOG="/data/local/cubej1_rollback.log"
 BACKUP_ROOT="/data/local/cubej1-backup"
+CLOUD_SERVICES="sessiond fms fmssecman NDCloudDaemon rds iijschedule transman"
 
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" >> "$LOG"
@@ -30,6 +31,17 @@ restore_file() {
     fi
 }
 
+restore_or_remove() {
+    src="$1"
+    dst="$2"
+    if [ -f "$src" ]; then
+        run_cmd cp "$src" "$dst" || fail "$dst の復元に失敗しました"
+    else
+        log "復元元がないため削除します: $dst"
+        run_cmd rm -f "$dst"
+    fi
+}
+
 log "=== Cube J1 ロールバック開始 ==="
 
 if [ -f "$BACKUP_ROOT/latest" ]; then
@@ -47,11 +59,19 @@ log "復元元: $BACKUP_DIR"
 run_cmd stop mqtt_ha_bridge
 run_cmd stop wisund
 run_cmd stop NDEcLiteAgent
+for svc in $CLOUD_SERVICES; do
+    run_cmd stop "$svc"
+done
+run_cmd stop tlsdated
 
 run_cmd mount -o rw,remount / || fail "rootファイルシステムの再マウントに失敗しました"
 
 restore_file "$BACKUP_DIR/wisund.rc" /system/etc/init/wisund.rc
 restore_file "$BACKUP_DIR/ndeclite_agent.rc" /system/etc/init/ndeclite_agent.rc
+for svc in $CLOUD_SERVICES; do
+    restore_or_remove "$BACKUP_DIR/$svc.rc" "/system/etc/init/$svc.rc"
+done
+restore_or_remove "$BACKUP_DIR/tlsdated.rc" /system/etc/init/tlsdated.rc
 
 if [ -f "$BACKUP_DIR/mqtt_ha_bridge.rc" ]; then
     restore_file "$BACKUP_DIR/mqtt_ha_bridge.rc" /system/etc/init/mqtt_ha_bridge.rc
@@ -67,5 +87,9 @@ run_cmd rm -f /data/local/led_effect.sh
 
 run_cmd start wisund
 run_cmd start NDEcLiteAgent
+for svc in $CLOUD_SERVICES; do
+    run_cmd start "$svc"
+done
+run_cmd start tlsdated
 
 log "=== Cube J1 ロールバック完了 ==="

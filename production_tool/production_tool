@@ -42,6 +42,19 @@ require_file() {
     fi
 }
 
+validate_hostname() {
+    host="$1"
+    case "$host" in
+        "")
+            return 1
+            ;;
+        *[!A-Za-z0-9.-]*)
+            return 1
+            ;;
+    esac
+    return 0
+}
+
 ENABLE_ADB=0
 PERSIST_ADB=0
 APPLY_WIFI=1
@@ -72,6 +85,15 @@ require_file "$PT/wisund_disabled.rc"
 require_file "$PT/ndeclite_disabled.rc"
 if [ "$APPLY_WIFI" = "1" ]; then
     require_file "$PT/wpa_supplicant.conf"
+fi
+if [ "$DISABLE_CLOUD" = "1" ]; then
+    for svc in $CLOUD_SERVICES; do
+        require_file "$PT/cloud_disabled/$svc.rc"
+    done
+fi
+if [ "$REPOINT_TLSDATE" = "1" ]; then
+    require_file "$PT/tlsdated_timesync.rc"
+    validate_hostname "$TLSDATE_HOST" || fail "TLSDATE_HOST に使えない文字が含まれています: $TLSDATE_HOST"
 fi
 
 run_cmd mkdir -p "$BACKUP_DIR" || fail "バックアップディレクトリを作成できません"
@@ -149,17 +171,13 @@ sleep 2
 if [ "$DISABLE_CLOUD" = "1" ]; then
     log "NextDriveクラウド系サービスを無効化します(DNSクエリ抑止)"
     for svc in $CLOUD_SERVICES; do
-        if [ -f "$PT/cloud_disabled/$svc.rc" ]; then
-            run_cmd cp "$PT/cloud_disabled/$svc.rc" "/system/etc/init/$svc.rc" || fail "$svc.rc の配置に失敗しました"
-            run_cmd chmod 644 "/system/etc/init/$svc.rc"
-            run_cmd stop "$svc"
-        else
-            log "クラウド無効化rcが見つかりません(スキップ): $svc.rc"
-        fi
+        run_cmd cp "$PT/cloud_disabled/$svc.rc" "/system/etc/init/$svc.rc" || fail "$svc.rc の配置に失敗しました"
+        run_cmd chmod 644 "/system/etc/init/$svc.rc"
+        run_cmd stop "$svc"
     done
 fi
 
-if [ "$REPOINT_TLSDATE" = "1" ] && [ -f "$PT/tlsdated_timesync.rc" ]; then
+if [ "$REPOINT_TLSDATE" = "1" ]; then
     # tlsdatedの時刻ソースは既定でnewsignaling.nextdrive.io(終了済み)に
     # ハードコードされ同期不能。生きた公開TLSホストへ向け直し、時刻同期を
     # 復活させると同時にnextdriveへのDNSクエリをなくす。

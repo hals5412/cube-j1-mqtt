@@ -7,7 +7,7 @@
 - 本番導入後はUSBメモリを抜いて構いません。
 - 電源断から復旧した場合も、initサービスとしてMQTTブリッジが自動起動します。
 - ADB TCPは初期設定では有効化しません。
-- 導入時に標準rcファイルとWi-Fi設定を `/data/local/cubej1-backup/` へバックアップします。
+- 導入時に標準rcファイル、クラウド系サービスrc、tlsdated rc、Wi-Fi設定を `/data/local/cubej1-backup/` へバックアップします。
 - ロールバックは `rollback_usb/` の構成をUSBメモリへコピーして実行します。
 
 ## 設定(複数台運用)
@@ -83,3 +83,12 @@ production_tool/
 トラブル時に一時的にログを読みたいだけなら `ENABLE_ADB=1, PERSIST_ADB=0`、遠隔復旧手段(`adb reboot` 等)を常設するなら両方1にします。永続有効はLAN内に無認証rootアクセスを開くため、ネットワークの信頼性を確認のうえ判断してください。
 
 注意: `PERSIST_ADB=1` で設定される `persist.sys.usb.config`(USBケーブル側のADB)は、無効化時もそのまま残します(TCP側の閉鎖が主目的のため)。
+
+## NextDriveクラウド接続と時刻同期
+
+既定では、終了済みのNextDriveクラウドへ接続を試みる常駐サービスを停止・無効化します。また、`tlsdated` の時刻同期先を `www.google.com` へ向け直します。
+
+- 標準のクラウド挙動を残したい場合は `install_config.sh` の `DISABLE_CLOUD=0` にしてください。
+- `tlsdated` の向け直しを行わない場合は `REPOINT_TLSDATE=0` にしてください。
+- `TLSDATE_HOST` を変更する場合は、ホスト名だけを指定してください。`/`、`:`, 空白などを含むURL形式は使えません。
+- ロールバックUSBを実行すると、導入時にバックアップしたクラウド系サービスrcと `tlsdated.rc` も元に戻します。
