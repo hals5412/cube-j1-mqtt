@@ -205,8 +205,6 @@ sleep 2
 if [ "$DISABLE_P2P_AP" = "1" ]; then
     log "Wi-Fi Direct/P2P APを停止します"
     run_cmd /system/bin/sh /data/local/disable_p2p_ap.sh
-    run_cmd stop disable_p2p_ap
-    run_cmd start disable_p2p_ap
 fi
 
 if [ "$DISABLE_CLOUD" = "1" ]; then

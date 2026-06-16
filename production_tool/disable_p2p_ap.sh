@@ -1,7 +1,8 @@
 #!/system/bin/sh
 
 # Cube J1の初期設定用と思われるWi-Fi Direct/P2P APを停止します。
-# 通常の自宅Wi-Fi接続(wlan0)は止めず、p2p-wlan0-0 と dnsmasq だけを対象にします。
+# 通常の自宅Wi-Fi接続(wlan0)は止めず、p2p-wlan0-0 と
+# P2P/AP用dnsmasqだけを対象にします。
 
 LOG=/data/local/cubej1_p2p_ap.log
 WPA_CONF=/data/misc/wifi/wpa_supplicant.conf
@@ -28,12 +29,34 @@ stop_p2p_once() {
     $WPA_CLI -i wlan0 p2p_flush >/dev/null 2>&1
 
     ifconfig p2p-wlan0-0 down >/dev/null 2>&1
-    pkill dnsmasq >/dev/null 2>&1
+    stop_p2p_dnsmasq
+}
+
+p2p_dnsmasq_pids() {
+    ps | grep '[d]nsmasq' | while read user pid rest; do
+        cmd="$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)"
+        case "$cmd" in
+            *"--dhcp-range=192.168.100."*|*"p2p-wlan0-0"*)
+                echo "$pid"
+                ;;
+        esac
+    done
+}
+
+stop_p2p_dnsmasq() {
+    for pid in $(p2p_dnsmasq_pids); do
+        log "P2P/AP用dnsmasqを停止します: pid=$pid"
+        kill "$pid" >/dev/null 2>&1
+    done
+}
+
+p2p_dnsmasq_is_active() {
+    [ -n "$(p2p_dnsmasq_pids)" ]
 }
 
 p2p_is_active() {
     ip addr show p2p-wlan0-0 >/dev/null 2>&1 && return 0
-    ps | grep '[d]nsmasq' >/dev/null 2>&1 && return 0
+    p2p_dnsmasq_is_active && return 0
     return 1
 }
 
