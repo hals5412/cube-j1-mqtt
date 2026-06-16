@@ -21,6 +21,7 @@ import fcntl
 import collections
 import re
 import threading
+import datetime
 
 CONFIG_PATH = "/data/local/config.json"
 LOG_PATH    = "/data/local/mqtt_bridge.log"
@@ -399,7 +400,20 @@ def wisun_connect(fd, br_id, br_pwd):
 # ECHONET Liteフレーム生成 / 解析
 # ---------------------------------------------------------------------------
 
-EPCS = [0xD3, 0xE1, 0xE7, 0xE0, 0xE3, 0xE8]
+# 常にポーリングする基本EPC。
+DEFAULT_EPCS = [0xD3, 0xE1, 0xE7, 0xE0, 0xE3, 0xE8]
+# メーターが対応する場合のみ追加でポーリングするEPC。
+# (0x88 異常状態 / 0x97 時刻 / 0x98 日付 / 0xEA 定時積算正 / 0xEB 定時積算逆)
+# プロパティマップ適応ポーリングは nanamitm/cube-j1-mqtt を参考に移植。
+EXTRA_EPCS = [0x88, 0x97, 0x98, 0xEA, 0xEB]
+PROPERTY_MAP_EPC = 0x9F
+# プロパティマップ取得のリトライ回数(join直後のINF取り違え対策)。
+PROPERTY_MAP_ATTEMPTS = 3
+# 1回のGetで要求するEPCの最大数。一部のメーターは1リクエストで返す
+# プロパティ数を制限する(超過分を黙って切り捨てる)ため、バッチ分割する。
+POLL_BATCH_SIZE = 6
+# 定時積算電力量が未計測のときに返されるセンチネル値。
+MISSING_CUMULATIVE_ENERGY = 0xFFFFFFFE
 
 def build_el_get(tid, epcs):
     frame = bytearray()
@@ -436,6 +450,42 @@ def parse_el_response(data):
         pos += pdc
     return result
 
+def parse_property_map(edt):
+    """プロパティマップ(EPC 0x9F)を対応EPCの集合へ変換する。
+    nanamitm/cube-j1-mqtt の実装を参考に移植。"""
+    if not edt:
+        return set()
+    count = edt[0]
+    prop_map = edt[1:]
+    result = set()
+    if count < 16:
+        # 形式1: EPCをそのまま列挙
+        for epc in prop_map:
+            result.add(epc)
+    else:
+        # 形式2: 16バイトのビットマップ
+        for i, b in enumerate(prop_map):
+            for bit in range(8):
+                if b & (1 << bit):
+                    result.add(((bit + 0x08) << 4) + i)
+    return result
+
+def format_epcs(epcs):
+    return ",".join(["0x{:02X}".format(epc) for epc in sorted(epcs)])
+
+def decode_datetime7(edt):
+    """7バイトの年(2)月日時分秒をdatetimeへ。不正ならNone。"""
+    if len(edt) < 7:
+        return None
+    try:
+        year = struct.unpack(">H", bytes(edt[0:2]))[0]
+        return datetime.datetime(year, edt[2], edt[3], edt[4], edt[5], edt[6])
+    except Exception:
+        return None
+
+def format_datetime(dt):
+    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else None
+
 def decode_measurements(props):
     result = {}
 
@@ -468,6 +518,33 @@ def decode_measurements(props):
         result["current_r_a"] = r / 10.0
         result["current_t_a"] = t / 10.0
 
+    # 88: 異常発生状態 (0x41=異常あり, 0x42=異常なし)
+    if 0x88 in props and len(props[0x88]) >= 1:
+        fault = props[0x88][0]
+        if fault == 0x41:
+            result["fault_status"] = "fault"
+        elif fault == 0x42:
+            result["fault_status"] = "normal"
+        else:
+            result["fault_status"] = "unknown"
+
+    # 97/98: メーターの現在時刻・日付
+    if 0x97 in props and len(props[0x97]) >= 2:
+        result["meter_time"] = "{:02d}:{:02d}".format(props[0x97][0], props[0x97][1])
+    if 0x98 in props and len(props[0x98]) >= 4:
+        year = struct.unpack(">H", bytes(props[0x98][0:2]))[0]
+        result["meter_date"] = "{:04d}-{:02d}-{:02d}".format(year, props[0x98][2], props[0x98][3])
+
+    # EA/EB: 定時積算電力量 (7バイト計測時刻 + 4バイト積算値)
+    if 0xEA in props and len(props[0xEA]) >= 11:
+        dt = decode_datetime7(props[0xEA][0:7])
+        result["fixed_time_forward_timestamp"] = format_datetime(dt)
+        result["fixed_time_energy_forward_raw"] = struct.unpack(">I", bytes(props[0xEA][7:11]))[0]
+    if 0xEB in props and len(props[0xEB]) >= 11:
+        dt = decode_datetime7(props[0xEB][0:7])
+        result["fixed_time_reverse_timestamp"] = format_datetime(dt)
+        result["fixed_time_energy_reverse_raw"] = struct.unpack(">I", bytes(props[0xEB][7:11]))[0]
+
     return result
 
 def apply_energy_scale(measurements, coeff, unit_kwh):
@@ -477,19 +554,65 @@ def apply_energy_scale(measurements, coeff, unit_kwh):
         measurements["energy_forward_kwh"] = measurements["energy_forward_raw"] * c * u
     if "energy_reverse_raw" in measurements:
         measurements["energy_reverse_kwh"] = measurements["energy_reverse_raw"] * c * u
+    if measurements.get("fixed_time_energy_forward_raw") not in (None, MISSING_CUMULATIVE_ENERGY):
+        measurements["fixed_time_energy_forward_kwh"] = measurements["fixed_time_energy_forward_raw"] * c * u
+    if measurements.get("fixed_time_energy_reverse_raw") not in (None, MISSING_CUMULATIVE_ENERGY):
+        measurements["fixed_time_energy_reverse_kwh"] = measurements["fixed_time_energy_reverse_raw"] * c * u
     return measurements
 
 # ---------------------------------------------------------------------------
 # SKSENDTOでECHONET Lite Getを送信
 # ---------------------------------------------------------------------------
 
-def send_el_get(fd, ipv6, tid):
-    frame = build_el_get(tid, EPCS)
+def send_el_get(fd, ipv6, tid, epcs=None):
+    frame = build_el_get(tid, epcs or DEFAULT_EPCS)
     # SKSENDTOは4桁hexのpayload長と、raw data後のCRLFを要求します。
     cmd = "SKSENDTO 1 {} 0E1A 1 0 {:04X} ".format(ipv6, len(frame))
     serial_write(fd, cmd)
     serial_write(fd, frame)
     serial_write(fd, b"\r\n")
+
+def detect_poll_epcs(fd, ipv6, tid):
+    """メーターのプロパティマップ(0x9F)を取得し、対応する追加EPCだけを
+    ポーリング対象に加える。取得失敗時はデフォルトEPCのみを返す。
+    nanamitm/cube-j1-mqtt のプロパティマップ適応ポーリングを参考に移植。
+
+    join直後はメーターが自発的にINF等を送ることがあり、その応答を取り違える
+    ことがあるため、0x9F(Get property mapはECHONET Lite必須プロパティ)が
+    取れるまで数回リトライする。"""
+    for attempt in range(PROPERTY_MAP_ATTEMPTS):
+        send_el_get(fd, ipv6, (tid + attempt) & 0xFFFF, [PROPERTY_MAP_EPC])
+        data = read_erxudp(fd, timeout=15)
+        props = parse_el_response(data) if data else {}
+        if PROPERTY_MAP_EPC in props:
+            supported = parse_property_map(props[PROPERTY_MAP_EPC])
+            poll_epcs = list(DEFAULT_EPCS)
+            for epc in EXTRA_EPCS:
+                if epc in supported and epc not in poll_epcs:
+                    poll_epcs.append(epc)
+            log("Gettable EPCs: {}".format(format_epcs(supported)))
+            log("Polling EPCs: {}".format(format_epcs(poll_epcs)))
+            return poll_epcs
+        log("Get property map: no valid response (attempt {}/{})".format(
+            attempt + 1, PROPERTY_MAP_ATTEMPTS))
+    log("Get property map unavailable; polling default EPCs only")
+    return list(DEFAULT_EPCS)
+
+def poll_props(fd, ipv6, tid, poll_epcs):
+    """poll_epcs をバッチに分割して Get し、応答プロパティをマージして返す。
+    一部のメーターは1リクエストで返すプロパティ数を制限し、超過分を黙って
+    切り捨てるため、POLL_BATCH_SIZE ごとに分けて要求する。
+    戻り値: (マージしたprops辞書, 次のtid)"""
+    merged = {}
+    t = tid & 0xFFFF
+    for i in range(0, len(poll_epcs), POLL_BATCH_SIZE):
+        chunk = poll_epcs[i:i + POLL_BATCH_SIZE]
+        send_el_get(fd, ipv6, t, chunk)
+        t = (t + 1) & 0xFFFF
+        data = read_erxudp(fd, timeout=15)
+        if data:
+            merged.update(parse_el_response(data))
+    return merged, t
 
 def read_erxudp(fd, timeout=15):
     """ERXUDPを待ち、payloadをbytearrayで返します。
@@ -737,6 +860,14 @@ SENSOR_DEFS = [
     ("energy_reverse", "積算電力量 逆方向",     "kWh", "energy",  "total_increasing", None),
     ("current_r",      "瞬時電流 R相",          "A",   "current", "measurement", None),
     ("current_t",      "瞬時電流 T相",          "A",   "current", "measurement", None),
+    # 以下はメーターが対応する場合のみ更新される(プロパティマップ適応ポーリング)
+    ("fixed_time_energy_forward", "定時積算電力量 正方向", "kWh", "energy", "total_increasing", None),
+    ("fixed_time_energy_reverse", "定時積算電力量 逆方向", "kWh", "energy", "total_increasing", None),
+    ("fault_status",   "メーター異常状態",      None,  None,      None, "diagnostic"),
+    ("meter_date",     "メーター日付",          None,  None,      None, "diagnostic"),
+    ("meter_time",     "メーター時刻",          None,  None,      None, "diagnostic"),
+    ("fixed_time_forward_timestamp", "定時積算 正方向 計測時刻", None, None, None, "diagnostic"),
+    ("fixed_time_reverse_timestamp", "定時積算 逆方向 計測時刻", None, None, None, "diagnostic"),
 ]
 
 DIAGNOSTIC_SENSOR_DEFS = [
@@ -807,6 +938,14 @@ def publish_measurements(mqtt, device_id, m):
         mqtt.publish("{}/current_r".format(base), "{:.1f}".format(m["current_r_a"]))
     if "current_t_a" in m:
         mqtt.publish("{}/current_t".format(base), "{:.1f}".format(m["current_t_a"]))
+    if "fixed_time_energy_forward_kwh" in m:
+        mqtt.publish("{}/fixed_time_energy_forward".format(base), "{:.3f}".format(m["fixed_time_energy_forward_kwh"]))
+    if "fixed_time_energy_reverse_kwh" in m:
+        mqtt.publish("{}/fixed_time_energy_reverse".format(base), "{:.3f}".format(m["fixed_time_energy_reverse_kwh"]))
+    for key in ("fault_status", "meter_date", "meter_time",
+                "fixed_time_forward_timestamp", "fixed_time_reverse_timestamp"):
+        if m.get(key) is not None:
+            mqtt.publish("{}/{}".format(base, key), str(m[key]))
 
 def publish_diagnostic(mqtt, device_id, data):
     base = "cubej/{}/diagnostic".format(device_id)
@@ -928,6 +1067,9 @@ def main():
     log("Meter connected at {}".format(ipv6))
 
     tid       = 1
+    # メーターが対応するEPCだけをポーリング対象にする(定時積算など)。
+    poll_epcs = detect_poll_epcs(fd, ipv6, tid)
+    tid       = (tid + 1) & 0xFFFF
     coeff     = 1
     unit_kwh  = 1.0
     last_ping = time.time()
@@ -952,12 +1094,9 @@ def main():
             orig_led = led_read()
             led_rgb(0, 0, 255)
             try:
-                send_el_get(fd, ipv6, tid)
-                tid = (tid + 1) & 0xFFFF
-                data = read_erxudp(fd, timeout=15)
-                if data:
+                props, tid = poll_props(fd, ipv6, tid, poll_epcs)
+                if props:
                     consecutive_timeouts = 0
-                    props = parse_el_response(data)
                     m     = decode_measurements(props)
                     m     = apply_energy_scale(m, coeff, unit_kwh)
                     if "coefficient" in m:
@@ -966,7 +1105,9 @@ def main():
                         unit_kwh = m["unit_kwh"]
                     display = {k: v for k, v in m.items()
                                if k in ("power_w", "energy_forward_kwh", "energy_reverse_kwh",
-                                         "current_r_a", "current_t_a")}
+                                         "current_r_a", "current_t_a",
+                                         "fixed_time_energy_forward_kwh", "fixed_time_energy_reverse_kwh",
+                                         "fault_status")}
                     # 正常時の計測ログは間引きます。起動・復旧後の初回は、
                     # 電力値を含む計測が取れた時点で必ず残します(空辞書は記録しません)。
                     if display and time.time() - last_measurement_log >= MEASUREMENT_LOG_INTERVAL:
@@ -1038,6 +1179,11 @@ def main():
                     # 復旧後の初回計測を必ずログに残します。
                     last_measurement_log = 0
                     log("Wi-SUN reconnected at {}".format(ipv6))
+                    # 追加EPCを未検出なら再検出を試みる(メーターの対応状況は不変なので、
+                    # 既に検出済みなら維持して再検出のタイムアウトで失わないようにする)。
+                    if len(poll_epcs) <= len(DEFAULT_EPCS):
+                        poll_epcs = detect_poll_epcs(fd, ipv6, tid)
+                        tid = (tid + 1) & 0xFFFF
                     publish_diagnostic(mqtt, device_id, {
                         "wisun_status": "connected",
                         "wisun_reconnect_count": wisun_reconnect_count,
