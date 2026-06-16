@@ -26,3 +26,8 @@ DISABLE_CLOUD=1
 # 0にすると向け直しをスキップします(標準のtlsdated挙動を残す場合)。
 REPOINT_TLSDATE=1
 TLSDATE_HOST="www.google.com"
+
+# Cube J1標準の初期設定用と思われるWi-Fi Direct/P2P AP(CubeJ-xxxxxx)を停止します。
+# オフラインのWi-SUN→MQTT電力監視では不要なため、既定で無効化します。
+# 0にすると無効化をスキップします(標準のP2P/AP挙動を残す場合)。
+DISABLE_P2P_AP=1

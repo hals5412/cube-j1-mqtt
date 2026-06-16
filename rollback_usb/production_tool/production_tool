@@ -57,6 +57,7 @@ fi
 log "復元元: $BACKUP_DIR"
 
 run_cmd stop mqtt_ha_bridge
+run_cmd stop disable_p2p_ap
 run_cmd stop wisund
 run_cmd stop NDEcLiteAgent
 for svc in $CLOUD_SERVICES; do
@@ -68,6 +69,7 @@ run_cmd mount -o rw,remount / || fail "rootファイルシステムの再マウ�
 
 restore_file "$BACKUP_DIR/wisund.rc" /system/etc/init/wisund.rc
 restore_file "$BACKUP_DIR/ndeclite_agent.rc" /system/etc/init/ndeclite_agent.rc
+restore_or_remove "$BACKUP_DIR/disable_p2p_ap.rc" /system/etc/init/disable_p2p_ap.rc
 for svc in $CLOUD_SERVICES; do
     restore_or_remove "$BACKUP_DIR/$svc.rc" "/system/etc/init/$svc.rc"
 done
@@ -84,6 +86,7 @@ restore_file "$BACKUP_DIR/wpa_supplicant.conf" /data/misc/wifi/wpa_supplicant.co
 run_cmd rm -f /data/local/config.json
 run_cmd rm -f /data/local/mqtt_bridge.py
 run_cmd rm -f /data/local/led_effect.sh
+run_cmd rm -f /data/local/disable_p2p_ap.sh
 
 run_cmd start wisund
 run_cmd start NDEcLiteAgent

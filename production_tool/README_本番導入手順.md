@@ -7,6 +7,7 @@
 - 本番導入後はUSBメモリを抜いて構いません。
 - 電源断から復旧した場合も、initサービスとしてMQTTブリッジが自動起動します。
 - ADB TCPは初期設定では有効化しません。
+- 初期設定用と思われる `CubeJ-xxxxxx` のP2P/APは初期設定では停止します。
 - 導入時に標準rcファイル、クラウド系サービスrc、tlsdated rc、Wi-Fi設定を `/data/local/cubej1-backup/` へバックアップします。
 - ロールバックは `rollback_usb/` の構成をUSBメモリへコピーして実行します。
 
@@ -31,6 +32,8 @@ MQTTのクライアントIDは通常 `device_id` と同じ値になります(`mq
 ssid="Wi-FiのSSIDを入力"
 psk="Wi-Fiのパスワードを入力"
 ```
+
+`p2p_disabled=1` は、Cube J1が出す `CubeJ-xxxxxx` のP2P/APを抑制するための設定です。Home Assistant用のWi-SUN→MQTTブリッジ運用では通常不要なAPなので、基本的にはそのまま残してください。
 
 実際の `config.json` と `wpa_supplicant.conf` には秘密情報が入るため、Git管理対象外です(`.gitignore` 済み)。取り扱いに注意してください。
 
@@ -83,6 +86,18 @@ production_tool/
 トラブル時に一時的にログを読みたいだけなら `ENABLE_ADB=1, PERSIST_ADB=0`、遠隔復旧手段(`adb reboot` 等)を常設するなら両方1にします。永続有効はLAN内に無認証rootアクセスを開くため、ネットワークの信頼性を確認のうえ判断してください。
 
 注意: `PERSIST_ADB=1` で設定される `persist.sys.usb.config`(USBケーブル側のADB)は、無効化時もそのまま残します(TCP側の閉鎖が主目的のため)。
+
+## CubeJ-xxxxxx のP2P/AP停止
+
+Cube J1は標準状態で、スマートフォンアプリの初期設定用と思われる `CubeJ-xxxxxx` 形式のSSIDを出す場合があります。本ツールの通常運用では不要なため、初期設定では停止します。
+
+制御は [install_config.sh](install_config.sh) の以下で行います。
+
+```sh
+DISABLE_P2P_AP=1
+```
+
+標準アプリでの再設定など、P2P/APを残したい場合だけ `DISABLE_P2P_AP=0` に変更し、`wpa_supplicant.conf` の `p2p_disabled=1` も削除してください。
 
 ## NextDriveクラウド接続と時刻同期
 
