@@ -898,8 +898,6 @@ OPTIONAL_SENSOR_DEFS = [
     ("fixed_time_reverse_timestamp", "定時積算 逆方向 計測時刻", None, None, None, "diagnostic"),
 ]
 
-SENSOR_DEFS = BASE_SENSOR_DEFS + OPTIONAL_SENSOR_DEFS
-
 OPTIONAL_SENSOR_EPCS = {
     "fixed_time_energy_forward": 0xEA,
     "fixed_time_forward_timestamp": 0xEA,
