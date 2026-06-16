@@ -414,6 +414,9 @@ PROPERTY_MAP_ATTEMPTS = 3
 POLL_BATCH_SIZE = 6
 # 定時積算電力量が未計測のときに返されるセンチネル値。
 MISSING_CUMULATIVE_ENERGY = 0xFFFFFFFE
+# これらの基本計測値が1つも取れない場合は、追加EPCだけ返っていても
+# 計測成功扱いにしない。監視のlast_seenを誤更新しないため。
+REQUIRED_MEASUREMENT_EPCS = (0xE7, 0xE0, 0xE3)
 
 def build_el_get(tid, epcs):
     frame = bytearray()
@@ -472,6 +475,14 @@ def parse_property_map(edt):
 
 def format_epcs(epcs):
     return ",".join(["0x{:02X}".format(epc) for epc in sorted(epcs)])
+
+def get_frame_tid(data):
+    if not data or len(data) < 4:
+        return None
+    try:
+        return struct.unpack(">H", bytes(data[2:4]))[0]
+    except Exception:
+        return None
 
 def decode_datetime7(edt):
     """7バイトの年(2)月日時分秒をdatetimeへ。不正ならNone。"""
@@ -581,8 +592,8 @@ def detect_poll_epcs(fd, ipv6, tid):
     ことがあるため、0x9F(Get property mapはECHONET Lite必須プロパティ)が
     取れるまで数回リトライする。"""
     for attempt in range(PROPERTY_MAP_ATTEMPTS):
-        send_el_get(fd, ipv6, (tid + attempt) & 0xFFFF, [PROPERTY_MAP_EPC])
-        data = read_erxudp(fd, timeout=15)
+        send_el_get(fd, ipv6, tid, [PROPERTY_MAP_EPC])
+        data = read_erxudp(fd, timeout=15, expected_tid=tid)
         props = parse_el_response(data) if data else {}
         if PROPERTY_MAP_EPC in props:
             supported = parse_property_map(props[PROPERTY_MAP_EPC])
@@ -602,19 +613,24 @@ def poll_props(fd, ipv6, tid, poll_epcs):
     """poll_epcs をバッチに分割して Get し、応答プロパティをマージして返す。
     一部のメーターは1リクエストで返すプロパティ数を制限し、超過分を黙って
     切り捨てるため、POLL_BATCH_SIZE ごとに分けて要求する。
-    戻り値: (マージしたprops辞書, 次のtid)"""
+    戻り値: (マージしたprops辞書, 次のtid, 基本計測EPCが取れたか)"""
     merged = {}
+    basic_ok = False
     t = tid & 0xFFFF
     for i in range(0, len(poll_epcs), POLL_BATCH_SIZE):
         chunk = poll_epcs[i:i + POLL_BATCH_SIZE]
-        send_el_get(fd, ipv6, t, chunk)
+        current_tid = t
+        send_el_get(fd, ipv6, current_tid, chunk)
         t = (t + 1) & 0xFFFF
-        data = read_erxudp(fd, timeout=15)
+        data = read_erxudp(fd, timeout=15, expected_tid=current_tid)
         if data:
-            merged.update(parse_el_response(data))
-    return merged, t
+            props = parse_el_response(data)
+            if any((epc in props and len(props[epc]) > 0) for epc in REQUIRED_MEASUREMENT_EPCS):
+                basic_ok = True
+            merged.update(props)
+    return merged, t, basic_ok
 
-def read_erxudp(fd, timeout=15):
+def read_erxudp(fd, timeout=15, expected_tid=None):
     """ERXUDPを待ち、payloadをbytearrayで返します。
 
     PANA認証失敗(EVENT 24)を受信した場合は例外を投げ、
@@ -640,9 +656,18 @@ def read_erxudp(fd, timeout=15):
                 if not hex_data.startswith("1081"):
                     continue
                 try:
-                    return bytearray(binascii.unhexlify(hex_data))
+                    data = bytearray(binascii.unhexlify(hex_data))
                 except Exception as e:
                     log("ERXUDP hex decode error: {}".format(e))
+                    continue
+                if expected_tid is not None:
+                    actual_tid = get_frame_tid(data)
+                    if actual_tid != (expected_tid & 0xFFFF):
+                        log("ERXUDP TID mismatch: expected=0x{:04X} actual={}".format(
+                            expected_tid & 0xFFFF,
+                            "None" if actual_tid is None else "0x{:04X}".format(actual_tid)))
+                        continue
+                return data
     return None
 
 # ---------------------------------------------------------------------------
@@ -854,13 +879,16 @@ class MQTTClient(object):
 # Home Assistant MQTT自動検出
 # ---------------------------------------------------------------------------
 
-SENSOR_DEFS = [
+BASE_SENSOR_DEFS = [
     ("power",          "瞬時電力",              "W",   "power",   "measurement", None),
     ("energy_forward", "積算電力量 正方向",     "kWh", "energy",  "total_increasing", None),
     ("energy_reverse", "積算電力量 逆方向",     "kWh", "energy",  "total_increasing", None),
     ("current_r",      "瞬時電流 R相",          "A",   "current", "measurement", None),
     ("current_t",      "瞬時電流 T相",          "A",   "current", "measurement", None),
-    # 以下はメーターが対応する場合のみ更新される(プロパティマップ適応ポーリング)
+]
+
+# 以下はメーターが対応する場合のみHome Assistantへ登録します。
+OPTIONAL_SENSOR_DEFS = [
     ("fixed_time_energy_forward", "定時積算電力量 正方向", "kWh", "energy", "total_increasing", None),
     ("fixed_time_energy_reverse", "定時積算電力量 逆方向", "kWh", "energy", "total_increasing", None),
     ("fault_status",   "メーター異常状態",      None,  None,      None, "diagnostic"),
@@ -869,6 +897,18 @@ SENSOR_DEFS = [
     ("fixed_time_forward_timestamp", "定時積算 正方向 計測時刻", None, None, None, "diagnostic"),
     ("fixed_time_reverse_timestamp", "定時積算 逆方向 計測時刻", None, None, None, "diagnostic"),
 ]
+
+SENSOR_DEFS = BASE_SENSOR_DEFS + OPTIONAL_SENSOR_DEFS
+
+OPTIONAL_SENSOR_EPCS = {
+    "fixed_time_energy_forward": 0xEA,
+    "fixed_time_forward_timestamp": 0xEA,
+    "fixed_time_energy_reverse": 0xEB,
+    "fixed_time_reverse_timestamp": 0xEB,
+    "fault_status": 0x88,
+    "meter_date": 0x98,
+    "meter_time": 0x97,
+}
 
 DIAGNOSTIC_SENSOR_DEFS = [
     ("last_seen", "最終取得時刻", None, None, None, "diagnostic"),
@@ -890,7 +930,7 @@ def iso_now():
     # Cube J1本体のタイムゾーン設定に依存せず、Home Assistant表示用にJSTで出します。
     return time.strftime("%Y-%m-%dT%H:%M:%S+09:00", time.gmtime(time.time() + 9 * 60 * 60))
 
-def publish_ha_discovery(mqtt, device_id, display_name, poll_interval):
+def publish_ha_discovery(mqtt, device_id, display_name, poll_interval, poll_epcs=None):
     device = {
         "identifiers": [device_id],
         "name":         display_name,
@@ -899,8 +939,19 @@ def publish_ha_discovery(mqtt, device_id, display_name, poll_interval):
     }
     base = "cubej/{}".format(device_id)
     availability_topic = "{}/status".format(base)
-    measurement_ids = [s[0] for s in SENSOR_DEFS]
-    for sid, name, unit, dev_class, state_class, entity_category in SENSOR_DEFS + DIAGNOSTIC_SENSOR_DEFS:
+    supported_epcs = set(poll_epcs or [])
+    active_optional_defs = []
+    inactive_optional_defs = []
+    for sensor_def in OPTIONAL_SENSOR_DEFS:
+        epc = OPTIONAL_SENSOR_EPCS.get(sensor_def[0])
+        if epc in supported_epcs:
+            active_optional_defs.append(sensor_def)
+        else:
+            inactive_optional_defs.append(sensor_def)
+
+    active_sensor_defs = BASE_SENSOR_DEFS + active_optional_defs
+    measurement_ids = [s[0] for s in active_sensor_defs]
+    for sid, name, unit, dev_class, state_class, entity_category in active_sensor_defs + DIAGNOSTIC_SENSOR_DEFS:
         topic  = "homeassistant/sensor/{}/{}/config".format(device_id, sid)
         config = {
             "name":               name,
@@ -922,6 +973,12 @@ def publish_ha_discovery(mqtt, device_id, display_name, poll_interval):
             config["entity_category"] = entity_category
         mqtt.publish(topic, config, retain=True)
         log("HA discovery: {}".format(topic))
+
+    if poll_epcs is not None:
+        for sid, name, unit, dev_class, state_class, entity_category in inactive_optional_defs:
+            topic = "homeassistant/sensor/{}/{}/config".format(device_id, sid)
+            mqtt.publish(topic, "", retain=True)
+            log("HA discovery cleared: {}".format(topic))
 
 def publish_status(mqtt, device_id, status):
     mqtt.publish("cubej/{}/status".format(device_id), status, retain=True)
@@ -1015,7 +1072,7 @@ def main():
             log("MQTT connect failed: {} - retry in 15s".format(e))
             time.sleep(15)
 
-    publish_ha_discovery(mqtt, device_id, display_name, poll_interval)
+    publish_ha_discovery(mqtt, device_id, display_name, poll_interval, DEFAULT_EPCS)
     publish_status(mqtt, device_id, "online")
     publish_diagnostic(mqtt, device_id, {
         "wisun_status": "starting",
@@ -1070,6 +1127,8 @@ def main():
     # メーターが対応するEPCだけをポーリング対象にする(定時積算など)。
     poll_epcs = detect_poll_epcs(fd, ipv6, tid)
     tid       = (tid + 1) & 0xFFFF
+    publish_ha_discovery(mqtt, device_id, display_name, poll_interval, poll_epcs)
+    publish_status(mqtt, device_id, "online")
     coeff     = 1
     unit_kwh  = 1.0
     last_ping = time.time()
@@ -1086,7 +1145,7 @@ def main():
                     or time.time() - last_discovery_publish > DISCOVERY_REPUBLISH_INTERVAL):
                 log("Republishing HA discovery (reconnect_count={})".format(
                     mqtt.reconnect_count))
-                publish_ha_discovery(mqtt, device_id, display_name, poll_interval)
+                publish_ha_discovery(mqtt, device_id, display_name, poll_interval, poll_epcs)
                 publish_status(mqtt, device_id, "online")
                 last_reconnect_count = mqtt.reconnect_count
                 last_discovery_publish = time.time()
@@ -1094,7 +1153,10 @@ def main():
             orig_led = led_read()
             led_rgb(0, 0, 255)
             try:
-                props, tid = poll_props(fd, ipv6, tid, poll_epcs)
+                props, tid, basic_ok = poll_props(fd, ipv6, tid, poll_epcs)
+                if props and not basic_ok:
+                    log("No basic measurement EPC in response; treating as timeout")
+                    props = {}
                 if props:
                     consecutive_timeouts = 0
                     m     = decode_measurements(props)
@@ -1184,6 +1246,8 @@ def main():
                     if len(poll_epcs) <= len(DEFAULT_EPCS):
                         poll_epcs = detect_poll_epcs(fd, ipv6, tid)
                         tid = (tid + 1) & 0xFFFF
+                        publish_ha_discovery(mqtt, device_id, display_name, poll_interval, poll_epcs)
+                        publish_status(mqtt, device_id, "online")
                     publish_diagnostic(mqtt, device_id, {
                         "wisun_status": "connected",
                         "wisun_reconnect_count": wisun_reconnect_count,
