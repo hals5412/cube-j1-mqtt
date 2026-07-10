@@ -214,6 +214,7 @@ Cube J1 標準状態では、スマートフォンアプリでの初期設定用
 
 - 既定で `DISABLE_P2P_AP=1` とし、`p2p-wlan0-0` とP2P/AP用の `dnsmasq` を停止する
 - `wpa_supplicant.conf` には `p2p_disabled=1` を入れ、再起動後も P2P/AP が立ちにくい状態にする
+- Wi-Fi設定に `disabled=1` が永続化された場合は、状態確認・回数制限付きの自己復旧処理で接続を戻す
 - 起動時にも `disable_p2p_ap` サービスを一度実行し、残った P2P グループを停止する
 - 標準アプリでの再設定用途など、Cube J1 本来の P2P/AP を残したい場合は `install_config.sh` の `DISABLE_P2P_AP=0` に変更し、`wpa_supplicant.conf` の `p2p_disabled=1` も削除する
 

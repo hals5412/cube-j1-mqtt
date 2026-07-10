@@ -1,0 +1,6 @@
+# 古いAndroid initのサービス名上限に収めるため短い名前を使用します。
+service cubej1_wifirec /system/bin/sh /data/local/wifi_recovery.sh
+    class late_start
+    user root
+    group root
+    seclabel u:r:shell:s0

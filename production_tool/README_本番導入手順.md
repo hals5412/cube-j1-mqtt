@@ -8,6 +8,7 @@
 - 電源断から復旧した場合も、initサービスとしてMQTTブリッジが自動起動します。
 - ADB TCPは初期設定では有効化しません。
 - 初期設定用と思われる `CubeJ-xxxxxx` のP2P/APは初期設定では停止します。
+- Wi-Fi設定が意図せず無効化された場合に、回数制限付きの自己復旧を行います。
 - 導入時に標準rcファイル、クラウド系サービスrc、tlsdated rc、Wi-Fi設定を `/data/local/cubej1-backup/` へバックアップします。
 - ロールバックは `rollback_usb/` の構成をUSBメモリへコピーして実行します。
 
@@ -98,6 +99,19 @@ DISABLE_P2P_AP=1
 ```
 
 標準アプリでの再設定など、P2P/APを残したい場合だけ `DISABLE_P2P_AP=0` に変更し、`wpa_supplicant.conf` の `p2p_disabled=1` も削除してください。
+
+## Wi-Fi自己復旧
+
+Cube J1の古いWi-Fi管理処理により、接続失敗後の `wpa_supplicant.conf` に `disabled=1` が保存され、電源再投入だけではWi-Fiへ戻れなくなる場合があります。既定では `ENABLE_WIFI_RECOVERY=1` とし、次の条件と制限で復旧します。
+
+- 起動後3分間はWi-Fi初期化を待つ
+- `wpa_state`、IPv4アドレス、デフォルトルートを30秒ごとに確認する
+- 異常が5分間継続した場合だけ復旧を開始する
+- 永続化された `disabled=1` を除去し、ネットワークの再有効化と再接続を行う
+- 最大3回失敗した場合は30分休止し、無限の復旧ループを防ぐ
+- MQTTブローカーだけが停止している場合はWi-Fiを操作しない
+
+状態は `/data/local/cubej1_wifi_recovery.status`、ログは `/data/local/cubej1_wifi_recovery.log` で確認できます。正常時は状態変化がない限りファイルへ書き込まないため、フラッシュへの継続的な書き込みは行いません。無効化する場合は [install_config.sh](install_config.sh) の `ENABLE_WIFI_RECOVERY=0` に変更して再導入してください。
 
 ## NextDriveクラウド接続と時刻同期
 

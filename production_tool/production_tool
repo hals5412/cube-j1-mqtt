@@ -25,6 +25,23 @@ run_cmd() {
     return "$rc"
 }
 
+stop_wifi_recovery() {
+    run_cmd stop cubej1_wifirec
+    if [ -f /data/local/cubej1_wifi_recovery.pid ]; then
+        recovery_pid="$(cat /data/local/cubej1_wifi_recovery.pid 2>/dev/null)"
+        case "$recovery_pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                recovery_cmd="$(tr '\0' ' ' < "/proc/$recovery_pid/cmdline" 2>/dev/null)"
+                case "$recovery_cmd" in
+                    *wifi_recovery.sh*) run_cmd kill "$recovery_pid" ;;
+                esac
+                ;;
+        esac
+        run_cmd rm -f /data/local/cubej1_wifi_recovery.pid
+    fi
+}
+
 copy_if_exists() {
     src="$1"
     dst="$2"
@@ -78,6 +95,7 @@ DISABLE_CLOUD=1
 REPOINT_TLSDATE=1
 TLSDATE_HOST="www.google.com"
 DISABLE_P2P_AP=1
+ENABLE_WIFI_RECOVERY=1
 
 # 無効化するNextDriveクラウド系サービス(終了済みクラウドへ延々と接続を試み、
 # DNSクエリを撒き散らすため)。オフラインのWi-SUN→MQTT電力監視には不要。
@@ -103,6 +121,10 @@ if [ "$DISABLE_P2P_AP" = "1" ]; then
     require_file "$PT/disable_p2p_ap.sh"
     require_file "$PT/disable_p2p_ap.rc"
 fi
+if [ "$ENABLE_WIFI_RECOVERY" = "1" ]; then
+    require_file "$PT/wifi_recovery.sh"
+    require_file "$PT/wifi_recovery.rc"
+fi
 if [ "$APPLY_WIFI" = "1" ]; then
     require_file "$PT/wpa_supplicant.conf"
 fi
@@ -127,6 +149,8 @@ copy_if_exists /data/local/config.json "$BACKUP_DIR/config.json"
 copy_if_exists /data/local/mqtt_bridge.py "$BACKUP_DIR/mqtt_bridge.py"
 copy_if_exists /data/local/led_effect.sh "$BACKUP_DIR/led_effect.sh"
 copy_if_exists_unless_ours /data/local/disable_p2p_ap.sh "$BACKUP_DIR/disable_p2p_ap.sh" "P2P/AP停止処理"
+copy_if_exists_unless_ours /system/etc/init/cubej1_wifi_recovery.rc "$BACKUP_DIR/cubej1_wifi_recovery.rc" "service cubej1_wifirec"
+copy_if_exists_unless_ours /data/local/wifi_recovery.sh "$BACKUP_DIR/wifi_recovery.sh" "Wi-Fi自己復旧処理"
 if [ "$DISABLE_CLOUD" = "1" ]; then
     for svc in $CLOUD_SERVICES; do
         copy_if_exists "/system/etc/init/$svc.rc" "$BACKUP_DIR/$svc.rc"
@@ -137,6 +161,9 @@ if [ "$REPOINT_TLSDATE" = "1" ]; then
 fi
 echo "$BACKUP_DIR" > "$BACKUP_ROOT/latest"
 echo "installed_at=$(date '+%Y-%m-%d %H:%M:%S')" > "$BACKUP_DIR/install_manifest.txt"
+
+# 再導入時に旧版プロセスが残らないよう、ファイルを置き換える前に停止します。
+stop_wifi_recovery
 
 run_cmd cp "$PT/led_effect.sh" /data/local/led_effect.sh || fail "led_effect.sh の配置に失敗しました"
 run_cmd chmod 755 /data/local/led_effect.sh || fail "led_effect.sh の権限設定に失敗しました"
@@ -185,6 +212,10 @@ if [ "$DISABLE_P2P_AP" = "1" ]; then
     run_cmd cp "$PT/disable_p2p_ap.sh" /data/local/disable_p2p_ap.sh || fail "disable_p2p_ap.sh の配置に失敗しました"
     run_cmd chmod 755 /data/local/disable_p2p_ap.sh || fail "disable_p2p_ap.sh の権限設定に失敗しました"
 fi
+if [ "$ENABLE_WIFI_RECOVERY" = "1" ]; then
+    run_cmd cp "$PT/wifi_recovery.sh" /data/local/wifi_recovery.sh || fail "wifi_recovery.sh の配置に失敗しました"
+    run_cmd chmod 755 /data/local/wifi_recovery.sh || fail "wifi_recovery.sh の権限設定に失敗しました"
+fi
 
 log "rootファイルシステムを書き込み可能にします"
 run_cmd mount -o rw,remount / || fail "rootファイルシステムの再マウントに失敗しました"
@@ -196,6 +227,14 @@ run_cmd cp "$PT/mqtt_ha_bridge.rc" /system/etc/init/mqtt_ha_bridge.rc || fail "m
 if [ "$DISABLE_P2P_AP" = "1" ]; then
     run_cmd cp "$PT/disable_p2p_ap.rc" /system/etc/init/disable_p2p_ap.rc || fail "disable_p2p_ap.rc の配置に失敗しました"
     run_cmd chmod 644 /system/etc/init/disable_p2p_ap.rc
+fi
+if [ "$ENABLE_WIFI_RECOVERY" = "1" ]; then
+    run_cmd cp "$PT/wifi_recovery.rc" /system/etc/init/cubej1_wifi_recovery.rc || fail "cubej1_wifi_recovery.rc の配置に失敗しました"
+    run_cmd chmod 644 /system/etc/init/cubej1_wifi_recovery.rc
+else
+    run_cmd stop cubej1_wifirec
+    run_cmd rm -f /system/etc/init/cubej1_wifi_recovery.rc
+    run_cmd rm -f /data/local/wifi_recovery.sh
 fi
 
 run_cmd stop wisund
@@ -230,6 +269,16 @@ if [ "$REPOINT_TLSDATE" = "1" ]; then
     run_cmd stop tlsdated
     # 今すぐ一度だけ同期して時計を合わせておく。
     run_cmd /usr/sbin/tlsdate -C /etc/ssl/certs -l -v -H "$TLSDATE_HOST" -p 443
+fi
+
+if [ "$ENABLE_WIFI_RECOVERY" = "1" ]; then
+    log "Wi-Fi自己復旧処理を起動します"
+    run_cmd start cubej1_wifirec
+    sleep 1
+    if [ "$(getprop init.svc.cubej1_wifirec)" != "running" ]; then
+        log "init未読込のため、今回の起動中はWi-Fi自己復旧処理を直接起動します"
+        run_cmd /system/bin/sh -c "/system/bin/sh /data/local/wifi_recovery.sh >/dev/null 2>&1 &"
+    fi
 fi
 
 if [ "$START_BRIDGE" = "1" ]; then

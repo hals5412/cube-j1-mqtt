@@ -58,6 +58,19 @@ log "復元元: $BACKUP_DIR"
 
 run_cmd stop mqtt_ha_bridge
 run_cmd stop disable_p2p_ap
+run_cmd stop cubej1_wifirec
+if [ -f /data/local/cubej1_wifi_recovery.pid ]; then
+    recovery_pid="$(cat /data/local/cubej1_wifi_recovery.pid 2>/dev/null)"
+    case "$recovery_pid" in
+        ''|*[!0-9]*) ;;
+        *)
+            recovery_cmd="$(tr '\0' ' ' < "/proc/$recovery_pid/cmdline" 2>/dev/null)"
+            case "$recovery_cmd" in
+                *wifi_recovery.sh*) run_cmd kill "$recovery_pid" ;;
+            esac
+            ;;
+    esac
+fi
 run_cmd stop wisund
 run_cmd stop NDEcLiteAgent
 for svc in $CLOUD_SERVICES; do
@@ -70,6 +83,7 @@ run_cmd mount -o rw,remount / || fail "rootファイルシステムの再マウ�
 restore_file "$BACKUP_DIR/wisund.rc" /system/etc/init/wisund.rc
 restore_file "$BACKUP_DIR/ndeclite_agent.rc" /system/etc/init/ndeclite_agent.rc
 restore_or_remove "$BACKUP_DIR/disable_p2p_ap.rc" /system/etc/init/disable_p2p_ap.rc
+restore_or_remove "$BACKUP_DIR/cubej1_wifi_recovery.rc" /system/etc/init/cubej1_wifi_recovery.rc
 for svc in $CLOUD_SERVICES; do
     restore_or_remove "$BACKUP_DIR/$svc.rc" "/system/etc/init/$svc.rc"
 done
@@ -87,6 +101,9 @@ run_cmd rm -f /data/local/config.json
 run_cmd rm -f /data/local/mqtt_bridge.py
 run_cmd rm -f /data/local/led_effect.sh
 run_cmd rm -f /data/local/disable_p2p_ap.sh
+restore_or_remove "$BACKUP_DIR/wifi_recovery.sh" /data/local/wifi_recovery.sh
+run_cmd rm -f /data/local/cubej1_wifi_recovery.pid
+run_cmd rm -f /data/local/cubej1_wifi_recovery.status
 
 run_cmd start wisund
 run_cmd start NDEcLiteAgent
