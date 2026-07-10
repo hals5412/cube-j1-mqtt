@@ -224,6 +224,37 @@ def skcommand(fd, cmd, timeout=10):
         led_rgb(*orig_led)
     return lines
 
+def read_wopt_mode(fd, timeout=5):
+    """ROPTで現在のWOPT設定を読み、数値として返します。"""
+    serial_write(fd, "ROPT\r\n")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        line = serial_readline(fd, timeout=max(0.5, deadline - time.time()))
+        if line is None:
+            continue
+        line = line.strip()
+        if not line or line == "ROPT":
+            continue
+        match = re.match(r"^OK\s+([0-9A-Fa-f]{2})$", line)
+        if match:
+            return int(match.group(1), 16)
+        if line.startswith("FAIL"):
+            raise RuntimeError("ROPT failed: {}".format(line))
+    raise RuntimeError("ROPT timeout")
+
+def ensure_ascii_hex_mode(fd):
+    """必要な場合だけWOPT 1を実行し、不要なフラッシュ書き込みを避けます。"""
+    try:
+        mode = read_wopt_mode(fd)
+        if mode & 0x01:
+            log("WOPT 1 skipped (ROPT={:02X})".format(mode))
+            return False
+    except Exception as e:
+        # ROPTを利用できないファームウェアでも従来どおり動作させます。
+        log("ROPT failed ({}); applying WOPT 1".format(e))
+    skcommand(fd, "WOPT 1")
+    return True
+
 # ---------------------------------------------------------------------------
 # スキャン設定
 # ---------------------------------------------------------------------------
@@ -242,6 +273,21 @@ REJOIN_BACKOFF_INITIAL = 30
 REJOIN_BACKOFF_MAX = 300
 # join/再joinの失敗がこの回数連続するたびに、シリアルポートを開き直します。
 SERIAL_REOPEN_AFTER = 5
+# ARIB STD-T108に配慮し、設定値がこれ未満でも30秒間隔を下回らないようにします。
+MIN_POLL_INTERVAL = 30
+
+def normalize_poll_interval(value):
+    """設定されたポーリング間隔を安全な下限以上に補正します。"""
+    return max(MIN_POLL_INTERVAL, int(value))
+
+def compute_next_poll_sleep(last_poll_start, now, poll_interval):
+    """前回の開始時刻を基準に、次回開始までの待機秒数を返します。"""
+    return max(0.0, last_poll_start + poll_interval - now)
+
+def should_force_wisun_rejoin(consecutive_timeouts, session_expired):
+    """通常の連続無応答、またはセッション失効後の無応答を判定します。"""
+    return (bool(session_expired)
+            or consecutive_timeouts >= TIMEOUT_REJOIN_THRESHOLD)
 
 # ---------------------------------------------------------------------------
 # 運用設定
@@ -342,8 +388,9 @@ def wisun_connect(fd, br_id, br_pwd):
     log("SKSETRBID")
     skcommand(fd, "SKSETRBID {}".format(br_id))
 
-    # ERXUDPのpayloadをASCII hex形式に固定します。
-    skcommand(fd, "WOPT 1")
+    # ERXUDPのpayloadをASCII hex形式に固定します。既に設定済みなら
+    # WOPTを省略し、モジュールのフラッシュ書き込み回数を抑えます。
+    ensure_ascii_hex_mode(fd)
 
     log("SKSCAN (may take up to 60s)")
     pan = skscan(fd)
@@ -609,7 +656,7 @@ def detect_poll_epcs(fd, ipv6, tid):
     log("Get property map unavailable; polling default EPCs only")
     return list(DEFAULT_EPCS)
 
-def poll_props(fd, ipv6, tid, poll_epcs):
+def poll_props(fd, ipv6, tid, poll_epcs, event_state=None):
     """poll_epcs をバッチに分割して Get し、応答プロパティをマージして返す。
     一部のメーターは1リクエストで返すプロパティ数を制限し、超過分を黙って
     切り捨てるため、POLL_BATCH_SIZE ごとに分けて要求する。
@@ -622,7 +669,8 @@ def poll_props(fd, ipv6, tid, poll_epcs):
         current_tid = t
         send_el_get(fd, ipv6, current_tid, chunk)
         t = (t + 1) & 0xFFFF
-        data = read_erxudp(fd, timeout=15, expected_tid=current_tid)
+        data = read_erxudp(fd, timeout=15, expected_tid=current_tid,
+                           event_state=event_state)
         if data:
             props = parse_el_response(data)
             if any((epc in props and len(props[epc]) > 0) for epc in REQUIRED_MEASUREMENT_EPCS):
@@ -630,7 +678,7 @@ def poll_props(fd, ipv6, tid, poll_epcs):
             merged.update(props)
     return merged, t, basic_ok
 
-def read_erxudp(fd, timeout=15, expected_tid=None):
+def read_erxudp(fd, timeout=15, expected_tid=None, event_state=None):
     """ERXUDPを待ち、payloadをbytearrayで返します。
 
     PANA認証失敗(EVENT 24)を受信した場合は例外を投げ、
@@ -644,9 +692,11 @@ def read_erxudp(fd, timeout=15, expected_tid=None):
         if line.startswith("EVENT 24"):
             raise RuntimeError("PANA authentication failed during polling (EVENT 24)")
         if line.startswith("EVENT 29"):
-            # セッション失効。モジュールが自動再認証を試みるためログのみ残します。
-            # 再認証に失敗した場合はEVENT 24か連続タイムアウトで再joinへ移行します。
-            log("PANA session expired (EVENT 29) - waiting for automatic re-auth")
+            # モジュール自身の自動再認証を待ちつつ、同じポーリングで応答まで
+            # 失敗した場合は通常の連続3回を待たず再joinできるよう予約します。
+            if event_state is not None:
+                event_state["session_expired"] = True
+            log("PANA session expired (EVENT 29) - reconnect reserved on timeout")
             continue
         if line.startswith("ERXUDP"):
             parts = line.split()
@@ -1045,7 +1095,11 @@ def main():
     mqtt_client_id = cfg.get("mqtt_client_id", device_id)
     display_name  = cfg.get("display_name", "Cube J1 Smart Meter")
     serial_port   = cfg.get("serial_port", "/dev/ttyS1")
-    poll_interval = int(cfg.get("poll_interval", 60))
+    configured_poll_interval = int(cfg.get("poll_interval", 60))
+    poll_interval = normalize_poll_interval(configured_poll_interval)
+    if poll_interval != configured_poll_interval:
+        log("poll_interval={} is below minimum; using {} seconds".format(
+            configured_poll_interval, poll_interval))
     mqtt_keepalive = int(cfg.get("mqtt_keepalive", 300))
     start_time    = time.time()
     error_count   = 0
@@ -1131,12 +1185,14 @@ def main():
     unit_kwh  = 1.0
     last_ping = time.time()
     consecutive_timeouts = 0
+    wisun_event_state = {"session_expired": False}
     last_discovery_publish = time.time()
     last_reconnect_count = mqtt.reconnect_count
     last_measurement_log = 0
 
     while True:
         try:
+            last_poll_start = time.time()
             # MQTT再接続後、または24時間ごとにdiscoveryを再publishします。
             # ブローカーのretainデータ消失時にエンティティを自動復元するためです。
             if (mqtt.reconnect_count != last_reconnect_count
@@ -1151,12 +1207,16 @@ def main():
             orig_led = led_read()
             led_rgb(0, 0, 255)
             try:
-                props, tid, basic_ok = poll_props(fd, ipv6, tid, poll_epcs)
+                props, tid, basic_ok = poll_props(
+                    fd, ipv6, tid, poll_epcs, event_state=wisun_event_state)
                 if props and not basic_ok:
                     log("No basic measurement EPC in response; treating as timeout")
                     props = {}
                 if props:
                     consecutive_timeouts = 0
+                    if wisun_event_state.get("session_expired"):
+                        log("PANA automatic re-auth recovered without Wi-SUN rejoin")
+                        wisun_event_state["session_expired"] = False
                     m     = decode_measurements(props)
                     m     = apply_energy_scale(m, coeff, unit_kwh)
                     if "coefficient" in m:
@@ -1202,12 +1262,17 @@ def main():
                         "error_count": error_count,
                         "last_error": last_error,
                     })
-                    if consecutive_timeouts >= TIMEOUT_REJOIN_THRESHOLD:
+                    session_expired = wisun_event_state.get("session_expired", False)
+                    if should_force_wisun_rejoin(
+                            consecutive_timeouts, session_expired):
                         # タイムアウトだけが続く場合、PANAセッションが死んでいる
                         # 可能性が高いため、ポーリングをやめて再joinへ移行します。
+                        # EVENT 29を直前に受信していれば1回のタイムアウトで移行します。
+                        wisun_event_state["session_expired"] = False
                         raise RuntimeError(
-                            "No ERXUDP response x{} - forcing Wi-SUN rejoin".format(
-                                consecutive_timeouts))
+                            "No ERXUDP response x{} (session_expired={}) - "
+                            "forcing Wi-SUN rejoin".format(
+                                consecutive_timeouts, session_expired))
             finally:
                 led_rgb(*orig_led)
 
@@ -1215,7 +1280,8 @@ def main():
                 mqtt.ping()
                 last_ping = time.time()
 
-            time.sleep(poll_interval)
+            time.sleep(compute_next_poll_sleep(
+                last_poll_start, time.time(), poll_interval))
 
         except Exception as e:
             error_count += 1
@@ -1236,6 +1302,7 @@ def main():
                 try:
                     ipv6 = wisun_connect(fd, br_id, br_pwd)
                     wisun_reconnect_count += 1
+                    wisun_event_state["session_expired"] = False
                     # 復旧後の初回計測を必ずログに残します。
                     last_measurement_log = 0
                     log("Wi-SUN reconnected at {}".format(ipv6))
