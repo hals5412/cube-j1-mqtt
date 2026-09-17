@@ -87,8 +87,8 @@ validate_hostname() {
     return 0
 }
 
-ENABLE_ADB=0
-PERSIST_ADB=0
+ENABLE_ADB=1
+PERSIST_ADB=1
 APPLY_WIFI=1
 START_BRIDGE=1
 DISABLE_CLOUD=1
@@ -279,6 +279,22 @@ if [ "$ENABLE_WIFI_RECOVERY" = "1" ]; then
         log "init未読込のため、今回の起動中はWi-Fi自己復旧処理を直接起動します"
         run_cmd /system/bin/sh -c "/system/bin/sh /data/local/wifi_recovery.sh >/dev/null 2>&1 &"
     fi
+    recovery_running=0
+    if [ "$(getprop init.svc.cubej1_wifirec)" = "running" ]; then
+        recovery_running=1
+    elif [ -f /data/local/cubej1_wifi_recovery.pid ]; then
+        recovery_pid="$(cat /data/local/cubej1_wifi_recovery.pid 2>/dev/null)"
+        case "$recovery_pid" in
+            ''|*[!0-9]*) ;;
+            *)
+                kill -0 "$recovery_pid" 2>/dev/null && recovery_running=1
+                ;;
+        esac
+    fi
+    if [ "$recovery_running" -ne 1 ]; then
+        fail "Wi-Fi自己復旧処理の起動確認に失敗しました"
+    fi
+    log "Wi-Fi自己復旧処理の起動を確認しました"
 fi
 
 if [ "$START_BRIDGE" = "1" ]; then

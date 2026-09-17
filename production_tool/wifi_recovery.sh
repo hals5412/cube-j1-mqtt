@@ -9,14 +9,19 @@ STATUS_FILE=/data/local/cubej1_wifi_recovery.status
 PID_FILE=/data/local/cubej1_wifi_recovery.pid
 WPA_CONF=/data/misc/wifi/wpa_supplicant.conf
 WPA_CLI="/system/bin/wpa_cli -p /data/misc/wifi/sockets -i wlan0"
+TIMEOUT_BIN=/system/bin/timeout
+WPA_COMMAND_TIMEOUT_SEC=${WPA_COMMAND_TIMEOUT_SEC:-15}
+WIFI_MANAGER_SERVICE=${WIFI_MANAGER_SERVICE:-wifimgr}
 
 # 起動直後のWi-Fi初期化と競合しないよう3分待ちます。
 STARTUP_GRACE_SEC=${STARTUP_GRACE_SEC:-180}
 # 30秒間隔で確認し、実時間で5分継続した場合に障害と判定します。
 CHECK_INTERVAL_SEC=${CHECK_INTERVAL_SEC:-30}
 FAILURE_TRIGGER_SEC=${FAILURE_TRIGGER_SEC:-300}
-# 1回の復旧操作後に接続完了を待つ時間です。
-RECOVERY_WAIT_SEC=${RECOVERY_WAIT_SEC:-90}
+# 復旧操作後に接続完了を待つ時間です。
+RECOVERY_WAIT_SEC=${RECOVERY_WAIT_SEC:-45}
+# Wi-Fi管理サービス再起動後に接続完了を待つ時間です。
+STACK_RECOVERY_WAIT_SEC=${STACK_RECOVERY_WAIT_SEC:-60}
 MAX_RECOVERY_ATTEMPTS=${MAX_RECOVERY_ATTEMPTS:-3}
 # 連続失敗時は再試行を止め、復旧ループを防ぎます。
 COOLDOWN_SEC=${COOLDOWN_SEC:-1800}
@@ -62,6 +67,47 @@ stop_by_signal() {
     exit 0
 }
 
+run_wpa() {
+    action="$1"
+    shift
+    log "wpa_cli $action $*"
+    if [ -x "$TIMEOUT_BIN" ]; then
+        $TIMEOUT_BIN "${WPA_COMMAND_TIMEOUT_SEC}s" $WPA_CLI "$action" "$@" >> "$LOG" 2>&1
+    else
+        $WPA_CLI "$action" "$@" >> "$LOG" 2>&1
+    fi
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log "wpa_cli $action failed: rc=$rc"
+    fi
+    return "$rc"
+}
+
+read_wpa_status() {
+    if [ -x "$TIMEOUT_BIN" ]; then
+        $TIMEOUT_BIN "${WPA_COMMAND_TIMEOUT_SEC}s" $WPA_CLI status 2>/dev/null
+    else
+        $WPA_CLI status 2>/dev/null
+    fi
+}
+
+snapshot_wifi_state() {
+    phase="$1"
+    status="$(read_wpa_status)"
+    wpa_state="$(echo "$status" | sed -n 's/^wpa_state=//p' | head -n 1)"
+    ipv4="$(/system/bin/ip -4 addr show dev wlan0 2>/dev/null | grep 'inet ' | tr '\n' ' ' | sed 's/[[:space:]]*$//')"
+    route_line="$(/system/bin/ip route 2>/dev/null | grep '^default .*dev wlan0' | head -n 1)"
+    log "Wi-Fi状態[$phase]: wpa_state=${wpa_state:-unavailable} ipv4=${ipv4:-none} route=${route_line:-none}"
+    gateway="$(echo "$route_line" | sed -n 's/^default via \([^ ]*\).*/\1/p')"
+    if [ -n "$gateway" ] && /system/bin/ping -c 1 -W 2 "$gateway" >/dev/null 2>&1; then
+        log "Wi-Fi状態[$phase]: gateway_ping=ok"
+    elif [ -n "$gateway" ]; then
+        log "Wi-Fi状態[$phase]: gateway_ping=failed gateway=$gateway"
+    else
+        log "Wi-Fi状態[$phase]: gateway_ping=not_checked"
+    fi
+}
+
 if [ -f "$PID_FILE" ]; then
     old_pid="$(cat "$PID_FILE" 2>/dev/null)"
     case "$old_pid" in
@@ -102,10 +148,14 @@ wifi_is_healthy() {
 
         # ICMP応答を返さないルーターもあるため、IPと経路がある場合だけ
         # wpa_cliを補助確認に使います。切断中は呼ばず、長い応答待ちを避けます。
-        status="$($WPA_CLI status 2>/dev/null)"
+        status="$(read_wpa_status)"
         if echo "$status" | grep -q '^wpa_state=COMPLETED$'; then
             WIFI_REASON="healthy_wpa_fallback"
             return 0
+        fi
+        if [ -z "$status" ]; then
+            WIFI_REASON="gateway_unreachable_wpa_unresponsive"
+            return 1
         fi
     fi
 
@@ -132,7 +182,7 @@ remove_persisted_disabled() {
         chmod 660 "$WPA_CONF"
         chown system:wifi "$WPA_CONF"
         log "永続化された disabled=1 を除去しました"
-        $WPA_CLI reconfigure >> "$LOG" 2>&1
+        run_wpa reconfigure
         sleep 5
     fi
 }
@@ -141,11 +191,41 @@ recover_wifi() {
     attempt="$1"
     log "Wi-Fi復旧を実行します: attempt=$attempt reason=$WIFI_REASON"
     set_status "recovering" "attempt_$attempt"
+    snapshot_wifi_state "before_attempt_$attempt"
 
     remove_persisted_disabled
     /system/bin/ifconfig wlan0 up >> "$LOG" 2>&1
-    $WPA_CLI enable_network all >> "$LOG" 2>&1
-    $WPA_CLI reassociate >> "$LOG" 2>&1
+    log "Wi-Fi復旧段階1: プロファイル再有効化・再接続"
+    run_wpa enable_network all
+    run_wpa reassociate
+    sleep "$RECOVERY_WAIT_SEC"
+    if wifi_is_healthy; then
+        snapshot_wifi_state "stage1_recovered"
+        return 0
+    fi
+
+    log "Wi-Fi復旧段階1では復旧しないため、Wi-Fi管理サービスを再起動します"
+    /system/bin/ifconfig wlan0 down >> "$LOG" 2>&1
+    stop "$WIFI_MANAGER_SERVICE" >> "$LOG" 2>&1
+    rc=$?
+    log "stop $WIFI_MANAGER_SERVICE rc=$rc"
+    sleep 2
+    start "$WIFI_MANAGER_SERVICE" >> "$LOG" 2>&1
+    rc=$?
+    log "start $WIFI_MANAGER_SERVICE rc=$rc"
+    sleep 5
+    /system/bin/ifconfig wlan0 up >> "$LOG" 2>&1
+    log "Wi-Fi復旧段階2: Wi-Fi管理サービス再起動後の再接続"
+    run_wpa reconfigure
+    run_wpa enable_network all
+    run_wpa reassociate
+    sleep "$STACK_RECOVERY_WAIT_SEC"
+    if wifi_is_healthy; then
+        snapshot_wifi_state "stage2_recovered"
+        return 0
+    fi
+    snapshot_wifi_state "after_attempt_$attempt"
+    return 1
 }
 
 log "Wi-Fi自己復旧処理を開始します"
@@ -184,9 +264,7 @@ while true; do
     attempt=1
     recovered=0
     while [ "$attempt" -le "$MAX_RECOVERY_ATTEMPTS" ]; do
-        recover_wifi "$attempt"
-        sleep "$RECOVERY_WAIT_SEC"
-        if wifi_is_healthy; then
+        if recover_wifi "$attempt"; then
             log "Wi-Fi自己復旧に成功しました: attempt=$attempt"
             set_status "healthy" "recovered"
             failure_started_at=0

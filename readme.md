@@ -136,14 +136,14 @@ Cube J1 の RGB LED は、動作状態に応じて以下のように発光・点
 
 USB メモリ挿入時に Cube J1 が自動実行するメインスクリプト（`production_tool`）は、以下の処理を順に行っています。
 
-1. **ADB の TCP 有効化(オプション、既定は無効)**: `production_tool/install_config.sh` で `ENABLE_ADB=1` とした場合のみ、ポート `5555` で ADB 接続を受け付けるように設定。`PERSIST_ADB=1` を併用すると電源再投入後も維持される
+1. **ADB の TCP 有効化(本番設定では有効)**: `production_tool/install_config.sh` の既定値で、ポート `5555` の ADB 接続を受け付けるように設定し、`PERSIST_ADB=1` により電源再投入後も維持される。LAN内のroot権限アクセスとなるため、信頼できるLAN内でのみ使用する
 2. **Wi-Fi 設定**: `wpa_supplicant.conf` をシステムに配置してネットワークを再起動
 3. **ブリッジプログラムの配置**: `config.json` と `mqtt_bridge.py` を `/data/local/` ディレクトリへコピー
 4. **競合サービスの停止**: Wi-SUN モジュール（`/dev/ttyS1`）を占有してしまう既存サービス（`wisund`、`NDEcLiteAgent`）を停止し、以後の起動を無効化
 5. **クラウド系サービスの無効化(既定で有効)**: 終了済みの NextDrive クラウドへ延々と接続を試み大量の DNS クエリを発生させる常駐デーモン（`sessiond`、`fms`、`fmssecman`、`NDCloudDaemon`、`rds`、`iijschedule`、`transman`）を停止・無効化する。`install_config.sh` の `DISABLE_CLOUD=0` で無効化をスキップできる
 6. **時刻同期先の向け直し(既定で有効)**: `tlsdated`（TLS 時刻同期）の同期先は既定で `newsignaling.nextdrive.io`（終了済み）にハードコードされ同期不能なため、生きた公開 TLS ホスト（既定 `www.google.com`）へ向け直す。これにより時刻同期が復活し、同時に NextDrive への DNS クエリもなくなる。`install_config.sh` の `REPOINT_TLSDATE` / `TLSDATE_HOST` で変更・無効化できる
-7. **init サービスの登録**: 再起動後もプログラムが自動起動するよう、`mqtt_ha_bridge.rc` を `/system/etc/init/` へ配置
-8. **ブリッジ即時起動**: `mqtt_ha_bridge` サービスとして `mqtt_bridge.py` を起動開始
+7. **init サービスの登録**: 再起動後もプログラムが自動起動するよう、`mqtt_ha_bridge.rc` と `cubej1_wifi_recovery.rc` を `/system/etc/init/` へ配置
+8. **ブリッジ・Wi-Fi自己復旧の起動**: `mqtt_ha_bridge` と `cubej1_wifirec` を起動し、起動状態を確認
 9. **完了通知**: `led_effect.sh` を呼び出し、LED を点滅させてセットアップ完了を通知
 
 ### ファイル構成
@@ -231,6 +231,8 @@ Cube J1 標準状態では、スマートフォンアプリでの初期設定用
 - 既定で `DISABLE_P2P_AP=1` とし、`p2p-wlan0-0` とP2P/AP用の `dnsmasq` を停止する
 - `wpa_supplicant.conf` には `p2p_disabled=1` を入れ、再起動後も P2P/AP が立ちにくい状態にする
 - Wi-Fi設定に `disabled=1` が永続化された場合は、状態確認・回数制限付きの自己復旧処理で接続を戻す
+- Wi-Fi自己復旧の `wpa_cli` 操作はタイムアウト付きで、通常再接続に失敗した場合は Wi-Fi 管理サービスを再起動して再接続する
+- Wi-Fi復旧前後の `wpa_state`、IPv4、経路、ゲートウェイ到達性を `/data/local/cubej1_wifi_recovery.log` に記録する
 - 起動時にも `disable_p2p_ap` サービスを一度実行し、残った P2P グループを停止する
 - 標準アプリでの再設定用途など、Cube J1 本来の P2P/AP を残したい場合は `install_config.sh` の `DISABLE_P2P_AP=0` に変更し、`wpa_supplicant.conf` の `p2p_disabled=1` も削除する
 
@@ -263,7 +265,7 @@ Cube J1 標準状態では、スマートフォンアプリでの初期設定用
 
 - 導入ログ（`/data/local/cubej1_install.log`）、必須ファイル検証、失敗時の赤 LED 通知
 - 導入前に既存ファイルを `/data/local/cubej1-backup/` へ自動バックアップし、`rollback_usb/` でロールバック可能
-- ADB TCP は `install_config.sh` の設定どおりに必ず状態を揃える（既定は無効。本家は無条件で永続有効化）
+- ADB TCP は `install_config.sh` の設定どおりに必ず状態を揃える（本番設定の既定は永続有効）
 - B ルート認証情報なしで本体・Wi-Fi・MQTT 到達性を確認できる診断用 USB（`diagnostic_usb/`）を追加
 
 ### その他
@@ -281,7 +283,7 @@ Cube J1 のソフトウェア内部構造や、USB メモリを用いたスク�
 ## トラブルシューティング
 
 システムの状態や不具合の原因は、ADB 経由でログを確認することでデバッグが可能です。
-ADB は既定で無効のため、事前に `production_tool/install_config.sh` の `ENABLE_ADB=1` を設定した USB で再セットアップしておく必要があります。
+ADB は本番設定で永続有効のため、通常は `adb connect <Cube-J1のIPアドレス>:5555` で接続できます。
 
 ```sh
 # Cube J1 の IP アドレスに対し、ポート 5555 で ADB 接続
