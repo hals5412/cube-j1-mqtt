@@ -261,6 +261,53 @@ def ensure_ascii_hex_mode(fd):
 
 SCAN_DURATION_BASE = 4
 SCAN_RETRY_LIMIT = 10
+# SKSCAN durationは秒数そのものではなく、1チャンネルあたり
+# 0.01 * (2^duration + 1) 秒の走査時間を表します。全32bitの
+# チャンネルマスクを使うため、EVENT 22を待つ上限もdurationに応じて伸ばします。
+SCAN_CHANNEL_COUNT = 32
+SCAN_TIMEOUT_MARGIN = 10.0
+SCAN_TIMEOUT_MIN = 15.0
+
+
+def scan_timeout_for_duration(duration):
+    """SKSCAN完了(EVENT 22)を待つための安全な上限秒数を返します。"""
+    dwell = 0.01 * ((2 ** int(duration)) + 1)
+    return max(SCAN_TIMEOUT_MIN,
+               dwell * SCAN_CHANNEL_COUNT + SCAN_TIMEOUT_MARGIN)
+
+
+def normalize_pair_id(value):
+    return str(value or "").strip().upper()
+
+
+def expected_pair_id_from_br_id(br_id):
+    """SKSETRBIDでS0Aへ反映される末尾8文字のPairIDを返します。"""
+    value = normalize_pair_id(br_id)
+    return value[-8:] if value else ""
+
+
+def pan_lqi(pan):
+    try:
+        return int(pan.get("LQI", "0"), 16)
+    except Exception:
+        return -1
+
+
+def select_pan(pan_list, br_id=None):
+    """必要情報が揃ったPANからPairID一致を優先し、LQI最大を返します。"""
+    valid = [p for p in pan_list
+             if p.get("Channel") and p.get("Pan ID") and p.get("Addr")]
+    if not valid:
+        return {}
+
+    expected_pair_id = expected_pair_id_from_br_id(br_id)
+    if expected_pair_id:
+        pair_matches = [p for p in valid
+                        if normalize_pair_id(p.get("PairID")) == expected_pair_id]
+        if pair_matches:
+            valid = pair_matches
+
+    return max(valid, key=pan_lqi)
 
 # ---------------------------------------------------------------------------
 # 自己復旧設定
@@ -306,22 +353,23 @@ MEASUREMENT_LOG_INTERVAL = 60 * 60
 # SKSTACK-IP / Wi-SUN Bルート接続
 # ---------------------------------------------------------------------------
 
-def skscan(fd):
-    """アクティブスキャンを行い、LQIが最も良いPAN情報を返します。"""
+def skscan(fd, br_id=None):
+    """アクティブスキャンを完了まで待ち、接続対象として妥当なPANを返します。"""
     duration = SCAN_DURATION_BASE
-    
+
     while duration <= SCAN_RETRY_LIMIT:
         # 前回のコマンドやスキャンで残った行を捨てます。
         termios.tcflush(fd, termios.TCIFLUSH)
 
-        log("SKSCAN try duration={}".format(duration))
+        timeout = scan_timeout_for_duration(duration)
+        log("SKSCAN try duration={} timeout={:.1f}s".format(duration, timeout))
         # BP35C0形式のスキャンコマンドです。
         serial_write(fd, "SKSCAN 2 FFFFFFFF {} 0\r\n".format(duration))
 
-        pan_list  = []
-        current   = {}
+        pan_list = []
+        current = {}
         scan_done = False
-        deadline  = time.time() + duration
+        deadline = time.time() + timeout
         while time.time() < deadline:
             line = serial_readline(fd, timeout=2)
             if line is None:
@@ -339,15 +387,33 @@ def skscan(fd):
                 key, _, val = line.strip().partition(":")
                 current[key.strip()] = val.strip()
 
-        if pan_list:
-            log("SKSCAN found {} PAN(s), selecting best LQI".format(len(pan_list)))
-            pan_list.sort(key=lambda p: int(p.get("LQI", "0"), 16), reverse=True)
-            return pan_list[0]
+        # EVENT 22を受ける前の途中結果は使いません。次のSKSCANを重ねると
+        # 前回スキャンのイベントと混ざるため、正式な完了通知を必須にします。
+        if not scan_done:
+            log("SKSCAN timeout waiting for EVENT 22; discarding partial result")
+            duration += 1
+            continue
 
-        log("SKSCAN no PAN found, retrying with longer duration")
+        selected = select_pan(pan_list, br_id)
+        if selected:
+            expected_pair_id = expected_pair_id_from_br_id(br_id)
+            selected_pair_id = normalize_pair_id(selected.get("PairID"))
+            if expected_pair_id and selected_pair_id == expected_pair_id:
+                log("SKSCAN found {} PAN(s); selected PairID match with best LQI".format(
+                    len(pan_list)))
+            else:
+                log("SKSCAN found {} PAN(s); PairID match unavailable, using best LQI".format(
+                    len(pan_list)))
+            return selected
+
+        if pan_list:
+            log("SKSCAN completed but no PAN had Channel/Pan ID/Addr; retrying")
+        else:
+            log("SKSCAN no PAN found, retrying with longer duration")
         duration += 1
 
     return {}
+
 
 def skll64(fd, mac):
     """MACアドレスをIPv6リンクローカルアドレスへ変換します。"""
@@ -393,7 +459,7 @@ def wisun_connect(fd, br_id, br_pwd):
     ensure_ascii_hex_mode(fd)
 
     log("SKSCAN (may take up to 60s)")
-    pan = skscan(fd)
+    pan = skscan(fd, br_id)
     if not pan.get("Channel") or not pan.get("Pan ID") or not pan.get("Addr"):
         raise RuntimeError("SKSCAN: no PAN found ({})".format(pan))
 
@@ -459,8 +525,10 @@ PROPERTY_MAP_ATTEMPTS = 3
 # 1回のGetで要求するEPCの最大数。一部のメーターは1リクエストで返す
 # プロパティ数を制限する(超過分を黙って切り捨てる)ため、バッチ分割する。
 POLL_BATCH_SIZE = 6
-# 定時積算電力量が未計測のときに返されるセンチネル値。
+# ECHONET Liteで「計測データなし」を示すセンチネル値。
 MISSING_CUMULATIVE_ENERGY = 0xFFFFFFFE
+MISSING_INSTANT_POWER = 0x7FFFFFFE
+MISSING_INSTANT_CURRENT = 0x7FFE
 # これらの基本計測値が1つも取れない場合は、追加EPCだけ返っていても
 # 計測成功扱いにしない。監視のlast_seenを誤更新しないため。
 REQUIRED_MEASUREMENT_EPCS = (0xE7, 0xE0, 0xE3)
@@ -558,23 +626,31 @@ def decode_measurements(props):
                     0x0A: 10.0, 0x0B: 100.0, 0x0C: 1000.0, 0x0D: 10000.0}
         result["unit_kwh"] = unit_map.get(unit_byte, 1.0)
 
-    # E7: 瞬時電力
+    # E7: 瞬時電力。0x7FFFFFFEは「計測データなし」なのでpublishしません。
     if 0xE7 in props and len(props[0xE7]) >= 4:
-        result["power_w"] = struct.unpack(">i", bytes(props[0xE7][:4]))[0]
+        raw = struct.unpack(">I", bytes(props[0xE7][:4]))[0]
+        if raw != MISSING_INSTANT_POWER:
+            result["power_w"] = struct.unpack(">i", bytes(props[0xE7][:4]))[0]
 
-    # E0: 積算電力量 正方向
+    # E0: 積算電力量 正方向。0xFFFFFFFEは「計測データなし」です。
     if 0xE0 in props and len(props[0xE0]) >= 4:
-        result["energy_forward_raw"] = struct.unpack(">I", bytes(props[0xE0][:4]))[0]
+        raw = struct.unpack(">I", bytes(props[0xE0][:4]))[0]
+        if raw != MISSING_CUMULATIVE_ENERGY:
+            result["energy_forward_raw"] = raw
 
-    # E3: 積算電力量 逆方向
+    # E3: 積算電力量 逆方向。0xFFFFFFFEは「計測データなし」です。
     if 0xE3 in props and len(props[0xE3]) >= 4:
-        result["energy_reverse_raw"] = struct.unpack(">I", bytes(props[0xE3][:4]))[0]
+        raw = struct.unpack(">I", bytes(props[0xE3][:4]))[0]
+        if raw != MISSING_CUMULATIVE_ENERGY:
+            result["energy_reverse_raw"] = raw
 
-    # E8: 瞬時電流 R相/T相
+    # E8: 瞬時電流 R相/T相。各相の0x7FFEは個別に「計測データなし」です。
     if 0xE8 in props and len(props[0xE8]) >= 4:
         r, t = struct.unpack(">hh", bytes(props[0xE8][:4]))
-        result["current_r_a"] = r / 10.0
-        result["current_t_a"] = t / 10.0
+        if r != MISSING_INSTANT_CURRENT:
+            result["current_r_a"] = r / 10.0
+        if t != MISSING_INSTANT_CURRENT:
+            result["current_t_a"] = t / 10.0
 
     # 88: 異常発生状態 (0x41=異常あり, 0x42=異常なし)
     if 0x88 in props and len(props[0x88]) >= 1:
