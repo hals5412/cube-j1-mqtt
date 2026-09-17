@@ -136,7 +136,7 @@ Cube J1 の RGB LED は、動作状態に応じて以下のように発光・点
 
 USB メモリ挿入時に Cube J1 が自動実行するメインスクリプト（`production_tool`）は、以下の処理を順に行っています。
 
-1. **ADB の TCP 有効化(本番設定では有効)**: `production_tool/install_config.sh` の既定値で、ポート `5555` の ADB 接続を受け付けるように設定し、`PERSIST_ADB=1` により電源再投入後も維持される。LAN内のroot権限アクセスとなるため、信頼できるLAN内でのみ使用する
+1. **ADB の TCP 有効化(設定変更可能)**: `production_tool/install_config.sh` の既定値ではポート `5555` を今回の起動中だけ有効にする。`PERSIST_ADB=1` に変更した導入時だけ電源再投入後も維持される。LAN内のroot権限アクセスとなるため、信頼できるLAN内でのみ使用する
 2. **Wi-Fi 設定**: `wpa_supplicant.conf` をシステムに配置してネットワークを再起動
 3. **ブリッジプログラムの配置**: `config.json` と `mqtt_bridge.py` を `/data/local/` ディレクトリへコピー
 4. **競合サービスの停止**: Wi-SUN モジュール（`/dev/ttyS1`）を占有してしまう既存サービス（`wisund`、`NDEcLiteAgent`）を停止し、以後の起動を無効化
@@ -265,7 +265,7 @@ Cube J1 標準状態では、スマートフォンアプリでの初期設定用
 
 - 導入ログ（`/data/local/cubej1_install.log`）、必須ファイル検証、失敗時の赤 LED 通知
 - 導入前に既存ファイルを `/data/local/cubej1-backup/` へ自動バックアップし、`rollback_usb/` でロールバック可能
-- ADB TCP は `install_config.sh` の設定どおりに必ず状態を揃える（本番設定の既定は永続有効）
+- ADB TCP は `install_config.sh` の設定どおりに必ず状態を揃える（既定は今回の起動中のみ有効）
 - B ルート認証情報なしで本体・Wi-Fi・MQTT 到達性を確認できる診断用 USB（`diagnostic_usb/`）を追加
 
 ### その他
@@ -283,7 +283,7 @@ Cube J1 のソフトウェア内部構造や、USB メモリを用いたスク�
 ## トラブルシューティング
 
 システムの状態や不具合の原因は、ADB 経由でログを確認することでデバッグが可能です。
-ADB は本番設定で永続有効のため、通常は `adb connect <Cube-J1のIPアドレス>:5555` で接続できます。
+ADB は設定により今回の起動中だけ、または永続的に有効化できます。必要な導入時だけ `PERSIST_ADB=1` に変更してください。
 
 ```sh
 # Cube J1 の IP アドレスに対し、ポート 5555 で ADB 接続

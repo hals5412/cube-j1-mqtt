@@ -6,9 +6,9 @@
 #   ENABLE_ADB=0                : 無効(永続設定も解除)
 #   ENABLE_ADB=1, PERSIST_ADB=0 : 今回の起動中のみ有効(再起動で無効に戻る)
 #   ENABLE_ADB=1, PERSIST_ADB=1 : 有効を永続化(再起動後も維持)
-# 本番運用ではADB経由のログ取得・復旧に使用するため永続有効にします。
+# ADB TCPは設定で切り替えます。既定では今回の起動中だけ有効にします。
 ENABLE_ADB=1
-PERSIST_ADB=1
+PERSIST_ADB=0
 
 # Wi-Fi設定を本体へ反映します。
 APPLY_WIFI=1
