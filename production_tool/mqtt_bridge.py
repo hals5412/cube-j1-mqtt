@@ -458,7 +458,7 @@ def wisun_connect(fd, br_id, br_pwd):
     # WOPTを省略し、モジュールのフラッシュ書き込み回数を抑えます。
     ensure_ascii_hex_mode(fd)
 
-    log("SKSCAN (may take up to 60s)")
+    log("SKSCAN (waiting for EVENT 22)")
     pan = skscan(fd, br_id)
     if not pan.get("Channel") or not pan.get("Pan ID") or not pan.get("Addr"):
         raise RuntimeError("SKSCAN: no PAN found ({})".format(pan))
@@ -1419,3 +1419,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
